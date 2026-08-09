@@ -1,0 +1,32 @@
+query problemsetQuestionListV2(
+  $filters: QuestionFilterInput
+  $limit: Int
+  $searchKeyword: String
+  $skip: Int
+  $sortBy: QuestionSortByInput
+  $categorySlug: String
+) {
+  problemsetQuestionListV2(
+    filters: $filters
+    limit: $limit
+    searchKeyword: $searchKeyword
+    skip: $skip
+    sortBy: $sortBy
+    categorySlug: $categorySlug
+  ) {
+    total: totalLength
+    questions {
+      frontendQuestionId: questionFrontendId
+      title
+      titleSlug
+      difficulty
+      paidOnly
+      status
+      acRate
+      topicTags {
+        name
+        slug
+      }
+    }
+  }
+}

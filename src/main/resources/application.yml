@@ -1,0 +1,65 @@
+server:
+  port: ${SERVER_PORT:8080}
+  address: ${SERVER_ADDRESS:127.0.0.1}
+
+spring:
+  application:
+    name: leetcode-coach-mcp-server
+  datasource:
+    url: ${SQLITE_URL:jdbc:sqlite:./data/leetcode-coach.db}
+    driver-class-name: org.sqlite.JDBC
+    hikari:
+      maximum-pool-size: 1
+      minimum-idle: 1
+      connection-test-query: SELECT 1
+      connection-init-sql: PRAGMA foreign_keys=ON
+  sql:
+    init:
+      mode: always
+  ai:
+    mcp:
+      server:
+        enabled: true
+        name: leetcode-coach
+        version: 1.0.0
+        protocol: STREAMABLE
+        type: SYNC
+        instructions: >-
+          Use the tools to search problems, start a persisted practice session,
+          give progressive hints, record attempts, and review progress. Avoid
+          revealing a full solution before the user has attempted the problem.
+        capabilities:
+          tool: true
+          resource: true
+          prompt: false
+          completion: false
+        streamable-http:
+          mcp-endpoint: /mcp
+          keep-alive-interval: 20s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+leetcode:
+  endpoint: ${LEETCODE_GRAPHQL_ENDPOINT:https://leetcode.com/graphql}
+  session: ${LEETCODE_SESSION:}
+  csrf-token: ${LEETCODE_CSRF_TOKEN:}
+  user-agent: ${LEETCODE_USER_AGENT:LeetCodeCoachMCP/1.0}
+  remote-enabled: ${LEETCODE_REMOTE_ENABLED:true}
+  timeout-seconds: ${LEETCODE_TIMEOUT_SECONDS:8}
+
+app:
+  mcp-access:
+    api-key: ${MCP_API_KEY:}
+    allowed-origin-hosts: ${MCP_ALLOWED_ORIGIN_HOSTS:localhost,127.0.0.1}
+
+logging:
+  level:
+    com.ayush.leetcodecoach: INFO
+    org.springframework.ai.mcp: INFO

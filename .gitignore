@@ -1,0 +1,11 @@
+target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+.env
+*.db
+*.db-shm
+*.db-wal
+data/*
+!data/.gitkeep
