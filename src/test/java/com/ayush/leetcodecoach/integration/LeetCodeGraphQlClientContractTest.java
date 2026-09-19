@@ -177,6 +177,19 @@ class LeetCodeGraphQlClientContractTest {
     }
 
     @Test
+    void refusesToReadSubmissionsWithoutCredentialsRatherThanReturningAnEmptyList() {
+        // LeetCode answers an anonymous submissionList with nulls, which would look like "no
+        // submissions". The precondition is checked before any request is made.
+        int requestsBefore = LEETCODE.getAllServeEvents().size();
+
+        assertThatThrownBy(() -> client.fetchSubmissions(0, 20, null))
+                .isInstanceOf(LeetCodeIntegrationException.class)
+                .hasMessageContaining("LEETCODE_SESSION");
+
+        assertThat(LEETCODE.getAllServeEvents()).hasSize(requestsBefore);
+    }
+
+    @Test
     void openCircuitBreakerStopsCallingTheFailingEndpoint() {
         LEETCODE.stubFor(post(urlPathEqualTo("/graphql"))
                 .willReturn(aResponse().withStatus(500)));

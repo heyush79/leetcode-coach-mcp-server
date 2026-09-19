@@ -24,6 +24,8 @@ public class LeetCodeProperties {
     /** How long the breaker stays open before probing the API again. */
     private int openStateSeconds = 30;
 
+    private final Sync sync = new Sync();
+
     public String getEndpoint() {
         return endpoint;
     }
@@ -104,7 +106,98 @@ public class LeetCodeProperties {
         this.openStateSeconds = openStateSeconds;
     }
 
+    public Sync getSync() {
+        return sync;
+    }
+
     public boolean credentialsConfigured() {
         return session != null && !session.isBlank() && csrfToken != null && !csrfToken.isBlank();
+    }
+
+    /** Settings for pulling the user's own submissions from leetcode.com. */
+    public static class Sync {
+
+        /** Whether the background sync runs at all. The on-demand tool works regardless. */
+        private boolean enabled = true;
+
+        /** How often the background sync runs. */
+        private int intervalSeconds = 900;
+
+        /** How long after startup the first background sync runs. */
+        private int initialDelaySeconds = 30;
+
+        /**
+         * Submissions to the same problem closer together than this are one practice session.
+         * Further apart, the later one is a fresh attempt at recall and is graded separately.
+         */
+        private int sessionGapMinutes = 120;
+
+        /**
+         * A submission this soon after an assistant-driven session was completed is attached to
+         * that session rather than starting a new one, because it is the same sitting.
+         */
+        private int manualSessionSlackMinutes = 30;
+
+        /** Submissions per request. LeetCode's own client uses 20. */
+        private int pageSize = 20;
+
+        /** Upper bound on pages per run, so a first sync over a long history stays bounded. */
+        private int maxPages = 25;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getIntervalSeconds() {
+            return intervalSeconds;
+        }
+
+        public void setIntervalSeconds(int intervalSeconds) {
+            this.intervalSeconds = intervalSeconds;
+        }
+
+        public int getInitialDelaySeconds() {
+            return initialDelaySeconds;
+        }
+
+        public void setInitialDelaySeconds(int initialDelaySeconds) {
+            this.initialDelaySeconds = initialDelaySeconds;
+        }
+
+        public int getSessionGapMinutes() {
+            return sessionGapMinutes;
+        }
+
+        public void setSessionGapMinutes(int sessionGapMinutes) {
+            this.sessionGapMinutes = sessionGapMinutes;
+        }
+
+        public int getManualSessionSlackMinutes() {
+            return manualSessionSlackMinutes;
+        }
+
+        public void setManualSessionSlackMinutes(int manualSessionSlackMinutes) {
+            this.manualSessionSlackMinutes = manualSessionSlackMinutes;
+        }
+
+        public int getPageSize() {
+            return pageSize;
+        }
+
+        public void setPageSize(int pageSize) {
+            this.pageSize = pageSize;
+        }
+
+        public int getMaxPages() {
+            return maxPages;
+        }
+
+        public void setMaxPages(int maxPages) {
+            this.maxPages = maxPages;
+        }
     }
 }

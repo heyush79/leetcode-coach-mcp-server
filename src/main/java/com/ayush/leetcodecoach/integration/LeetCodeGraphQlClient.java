@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
 import org.springframework.graphql.client.HttpSyncGraphQlClient;
 import org.springframework.stereotype.Component;
 
@@ -76,6 +77,42 @@ public class LeetCodeGraphQlClient {
                         .retrieveSync("problemsetQuestionListV2")
                         .toEntity(RemoteQuestionList.class));
         return result == null || result.questions() == null ? List.of() : result.questions();
+    }
+
+    /**
+     * One page of the authenticated user's submissions, newest first.
+     *
+     * <p>Requires the session cookie: LeetCode returns nulls rather than an error for an anonymous
+     * caller, so the precondition is checked here to fail with a useful message instead of an empty
+     * page that looks like "no submissions".
+     *
+     * @param lastKey the continuation token from the previous page, or null for the first page
+     */
+    public RemoteSubmissionPage fetchSubmissions(int offset, int limit, @Nullable String lastKey) {
+        ensureRemoteEnabled();
+        if (!properties.credentialsConfigured()) {
+            throw new LeetCodeIntegrationException(
+                    "LEETCODE_SESSION and LEETCODE_CSRF_TOKEN are required to read your submissions");
+        }
+
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("offset", Math.max(0, offset));
+        variables.put("limit", Math.max(1, Math.min(limit, 50)));
+        variables.put("lastKey", lastKey);
+
+        RemoteSubmissionPage page = call(
+                "Unable to read submissions from LeetCode",
+                () -> graphQlClient.documentName("submissionList")
+                        .variables(variables)
+                        .retrieveSync("submissionList")
+                        .toEntity(RemoteSubmissionPage.class));
+
+        if (page == null || page.submissions() == null) {
+            // The shape LeetCode returns for a caller it does not recognise.
+            throw new LeetCodeIntegrationException(
+                    "LeetCode returned no submission list; the session cookie is probably expired");
+        }
+        return page;
     }
 
     public LeetCodeAuthStatus verifyAuthentication() {

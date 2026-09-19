@@ -57,7 +57,7 @@ class PracticeServiceTest {
     void returnsProgressiveHintWithoutSolutionCode() {
         Problem problem = problem(List.of("Use a map", "Search for the complement"));
         PracticeSession session = new PracticeSession(
-                "session-1", "two-sum", "ACTIVE", Instant.now(), null, 30, null, 0);
+                "session-1", "two-sum", "ACTIVE", Instant.now(), null, 30, null, 0, PracticeSession.SOURCE_MANUAL);
         when(practiceRepository.findSession("session-1")).thenReturn(Optional.of(session));
         when(practiceRepository.findAttempts("session-1")).thenReturn(List.of());
         when(catalogService.getProblem("two-sum", false)).thenReturn(problem);

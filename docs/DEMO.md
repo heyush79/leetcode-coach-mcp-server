@@ -63,11 +63,27 @@ Reviews are scheduled in days, so a live demo cannot show one maturing. Point at
 injected clock by a day and asserts the problem appears in `get_due_reviews` and then outranks every
 unattempted problem in `recommend_next_problem`.
 
-## Authentication demo
+## With your account connected
 
-Stop the offline process, export your own cookie values, set `LEETCODE_REMOTE_ENABLED=true`, restart
-and ask:
+This is the demo that shows the point. Stop the offline process, put your cookie values in `.env`,
+and restart with remote enabled:
 
-`Verify my LeetCode authentication and refresh the two-sum problem.`
+```bash
+set -a && source .env && set +a
+LEETCODE_REMOTE_ENABLED=true mvn spring-boot:run
+```
+
+Then, in the assistant:
+
+1. `Verify my LeetCode authentication.`
+2. Go to leetcode.com and submit something — a wrong answer first, then a fix, is the most
+   convincing.
+3. `Sync my LeetCode submissions.` The report says how many were imported and which problems were
+   rescheduled.
+4. `Show my recent practice sessions.` The new sitting is there with `source: LEETCODE`, its
+   attempts carrying the real verdicts.
+5. `What should I practise today?` The answer now reflects what you just did on the site.
+
+Left alone, step 3 happens every fifteen minutes on its own.
 
 Never screen-share the environment variable values.

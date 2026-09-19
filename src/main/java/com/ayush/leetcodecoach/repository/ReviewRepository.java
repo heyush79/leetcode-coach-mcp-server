@@ -65,6 +65,10 @@ public class ReviewRepository {
         return jdbcTemplate.query("SELECT * FROM review_schedule ORDER BY due_at", rowMapper);
     }
 
+    public void delete(String titleSlug) {
+        jdbcTemplate.update("DELETE FROM review_schedule WHERE title_slug = ?", titleSlug);
+    }
+
     public long countDue(Instant now) {
         Long value = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM review_schedule WHERE due_at <= ?", Long.class, now.toString());

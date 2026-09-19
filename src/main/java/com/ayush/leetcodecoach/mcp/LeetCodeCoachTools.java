@@ -12,10 +12,13 @@ import com.ayush.leetcodecoach.domain.ProblemSearchResult;
 import com.ayush.leetcodecoach.domain.ProgressStats;
 import com.ayush.leetcodecoach.domain.Recommendation;
 import com.ayush.leetcodecoach.domain.SessionContext;
+import com.ayush.leetcodecoach.domain.SyncReport;
+import com.ayush.leetcodecoach.domain.SyncStatus;
 import com.ayush.leetcodecoach.domain.TopicMasteryReport;
 import com.ayush.leetcodecoach.integration.LeetCodeGraphQlClient;
 import com.ayush.leetcodecoach.service.PracticeService;
 import com.ayush.leetcodecoach.service.ProblemCatalogService;
+import com.ayush.leetcodecoach.sync.SubmissionSyncService;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
@@ -26,14 +29,17 @@ public class LeetCodeCoachTools {
     private final ProblemCatalogService catalogService;
     private final PracticeService practiceService;
     private final LeetCodeGraphQlClient leetCodeClient;
+    private final SubmissionSyncService syncService;
 
     public LeetCodeCoachTools(
             ProblemCatalogService catalogService,
             PracticeService practiceService,
-            LeetCodeGraphQlClient leetCodeClient) {
+            LeetCodeGraphQlClient leetCodeClient,
+            SubmissionSyncService syncService) {
         this.catalogService = catalogService;
         this.practiceService = practiceService;
         this.leetCodeClient = leetCodeClient;
+        this.syncService = syncService;
     }
 
     @McpTool(
@@ -172,5 +178,27 @@ public class LeetCodeCoachTools {
             generateOutputSchema = true)
     public TopicMasteryReport getTopicMastery() {
         return TopicMasteryReport.of(practiceService.topicMastery());
+    }
+
+    @McpTool(
+            name = "sync_leetcode_submissions",
+            description = "Pull the user's own recent submissions from leetcode.com into their practice history, "
+                    + "grade each sitting, and rebuild the review schedule of every problem touched. Requires "
+                    + "LEETCODE_SESSION and LEETCODE_CSRF_TOKEN. Runs in the background on a schedule; call this "
+                    + "when the user has just been solving on leetcode.com and wants the coach caught up now.",
+            generateOutputSchema = true)
+    public SyncReport syncLeetCodeSubmissions(
+            @McpToolParam(description = "Re-scan the full history instead of stopping at the first "
+                    + "already-known submission. Use once to backfill older history.", required = false) Boolean full) {
+        return syncService.sync(Boolean.TRUE.equals(full));
+    }
+
+    @McpTool(
+            name = "get_sync_status",
+            description = "Report whether submissions can be synced from leetcode.com, when they last were, and "
+                    + "how many have been imported. Use this to explain why history looks empty.",
+            generateOutputSchema = true)
+    public SyncStatus getSyncStatus() {
+        return syncService.status();
     }
 }

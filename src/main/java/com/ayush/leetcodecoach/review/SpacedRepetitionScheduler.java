@@ -4,6 +4,8 @@ import com.ayush.leetcodecoach.domain.ReviewSchedule;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
+import java.util.List;
 import org.springframework.stereotype.Component;
 
 /**
@@ -37,9 +39,39 @@ public class SpacedRepetitionScheduler {
      */
     public static final int MAXIMUM_INTERVAL_DAYS = 365;
 
+    /** One graded recall of a problem: what SM-2 consumes. */
+    public record GradedEvent(int grade, Instant at) {
+    }
+
     /** The state of a problem that has never been reviewed. */
     public ReviewSchedule initial(String titleSlug, Instant now) {
         return new ReviewSchedule(titleSlug, INITIAL_EASINESS, 0, 0, 0, 0, null, now);
+    }
+
+    /**
+     * Rebuilds a problem's schedule from its complete history.
+     *
+     * <p>SM-2 is a fold over graded recalls in time order. Stepping the stored state forward with
+     * each new event is only correct when events arrive in order, and a submission sync can bring
+     * in months-old history after today's session. Replaying from the start makes the schedule a
+     * pure function of the history, so it is the same whatever order the history was learned in,
+     * and a scheduling bug can be fixed by replaying rather than by patching stored rows.
+     *
+     * @param events graded recalls in any order; must not be empty
+     */
+    public ReviewSchedule replay(String titleSlug, List<GradedEvent> events) {
+        if (events.isEmpty()) {
+            throw new IllegalArgumentException("Cannot replay an empty history for " + titleSlug);
+        }
+        List<GradedEvent> ordered = events.stream()
+                .sorted(Comparator.comparing(GradedEvent::at))
+                .toList();
+
+        ReviewSchedule state = initial(titleSlug, ordered.get(0).at());
+        for (GradedEvent event : ordered) {
+            state = next(state, event.grade(), event.at());
+        }
+        return state;
     }
 
     /**

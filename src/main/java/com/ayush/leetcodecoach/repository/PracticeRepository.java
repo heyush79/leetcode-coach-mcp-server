@@ -27,8 +27,9 @@ public class PracticeRepository {
     public void insertSession(PracticeSession session) {
         jdbcTemplate.update("""
                         INSERT INTO practice_sessions
-                        (id, title_slug, status, started_at, completed_at, target_minutes, notes, max_hint_level)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, title_slug, status, started_at, completed_at, target_minutes, notes,
+                         max_hint_level, source)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 session.id(),
                 session.titleSlug(),
@@ -37,7 +38,25 @@ public class PracticeRepository {
                 session.completedAt() == null ? null : session.completedAt().toString(),
                 session.targetMinutes(),
                 session.notes(),
-                session.maxHintLevel());
+                session.maxHintLevel(),
+                session.source());
+    }
+
+    /** Every session for a problem, oldest first. Window logic is done in Java, not SQL. */
+    public List<PracticeSession> findSessionsForProblem(String titleSlug) {
+        return jdbcTemplate.query(
+                "SELECT * FROM practice_sessions WHERE title_slug = ? ORDER BY started_at",
+                sessionMapper,
+                titleSlug);
+    }
+
+    /** Widens a synced session's span when a submission joins it on either side. */
+    public void extendSession(String sessionId, Instant startedAt, Instant completedAt) {
+        jdbcTemplate.update(
+                "UPDATE practice_sessions SET started_at = ?, completed_at = ? WHERE id = ?",
+                startedAt.toString(),
+                completedAt.toString(),
+                sessionId);
     }
 
     /** Records the deepest hint the user has asked for; hint level never decreases. */
@@ -67,8 +86,9 @@ public class PracticeRepository {
         jdbcTemplate.update("""
                         INSERT INTO attempts (
                             id, session_id, language, code, verdict, runtime_ms, memory_kb,
-                            time_complexity, space_complexity, notes, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            time_complexity, space_complexity, notes, created_at,
+                            source, leetcode_submission_id
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 attempt.id(),
                 attempt.sessionId(),
@@ -80,7 +100,21 @@ public class PracticeRepository {
                 attempt.timeComplexity(),
                 attempt.spaceComplexity(),
                 attempt.notes(),
-                attempt.createdAt().toString());
+                attempt.createdAt().toString(),
+                attempt.source(),
+                attempt.leetcodeSubmissionId());
+    }
+
+    public boolean attemptExistsForSubmission(String leetcodeSubmissionId) {
+        Long count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM attempts WHERE leetcode_submission_id = ?",
+                Long.class,
+                leetcodeSubmissionId);
+        return count != null && count > 0;
+    }
+
+    public long countSyncedAttempts() {
+        return nullableLong("SELECT COUNT(*) FROM attempts WHERE source = 'LEETCODE'");
     }
 
     public List<Attempt> findAttempts(String sessionId) {
@@ -148,7 +182,8 @@ public class PracticeRepository {
                 completedAt == null ? null : Instant.parse(completedAt),
                 getNullableInteger(rs, "target_minutes"),
                 rs.getString("notes"),
-                rs.getInt("max_hint_level"));
+                rs.getInt("max_hint_level"),
+                rs.getString("source"));
     }
 
     private Attempt mapAttempt(ResultSet rs, int rowNum) throws SQLException {
@@ -163,7 +198,9 @@ public class PracticeRepository {
                 rs.getString("time_complexity"),
                 rs.getString("space_complexity"),
                 rs.getString("notes"),
-                Instant.parse(rs.getString("created_at")));
+                Instant.parse(rs.getString("created_at")),
+                rs.getString("source"),
+                rs.getString("leetcode_submission_id"));
     }
 
     private Integer getNullableInteger(ResultSet rs, String column) throws SQLException {

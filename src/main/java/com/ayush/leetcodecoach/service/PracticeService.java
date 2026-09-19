@@ -55,7 +55,8 @@ public class PracticeService {
                 null,
                 safeTarget,
                 null,
-                0);
+                0,
+                PracticeSession.SOURCE_MANUAL);
         practiceRepository.insertSession(session);
         return session;
     }
@@ -131,7 +132,9 @@ public class PracticeService {
                 timeComplexity,
                 spaceComplexity,
                 notes,
-                Instant.now(clock));
+                Instant.now(clock),
+                Attempt.SOURCE_MANUAL,
+                null);
         practiceRepository.insertAttempt(attempt);
         return attempt;
     }

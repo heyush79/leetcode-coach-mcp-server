@@ -1,10 +1,13 @@
 package com.ayush.leetcodecoach.review;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 import com.ayush.leetcodecoach.domain.ReviewSchedule;
+import com.ayush.leetcodecoach.review.SpacedRepetitionScheduler.GradedEvent;
 import java.time.Instant;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class SpacedRepetitionSchedulerTest {
@@ -121,5 +124,54 @@ class SpacedRepetitionSchedulerTest {
         assertThat(initial.dueAt()).isEqualTo(NOW);
         assertThat(initial.lastReviewedAt()).isNull();
         assertThat(initial.easinessFactor()).isEqualTo(SpacedRepetitionScheduler.INITIAL_EASINESS);
+    }
+
+    @Test
+    void replayProducesTheSameScheduleAsSteppingForwardInOrder() {
+        Instant day1 = Instant.parse("2026-01-01T09:00:00Z");
+        Instant day2 = Instant.parse("2026-01-02T09:00:00Z");
+        Instant day10 = Instant.parse("2026-01-10T09:00:00Z");
+
+        ReviewSchedule stepped = scheduler.next(
+                scheduler.next(scheduler.next(scheduler.initial("two-sum", day1), 5, day1), 5, day2), 2, day10);
+
+        ReviewSchedule replayed = scheduler.replay("two-sum", List.of(
+                new GradedEvent(5, day1), new GradedEvent(5, day2), new GradedEvent(2, day10)));
+
+        assertThat(replayed).isEqualTo(stepped);
+    }
+
+    @Test
+    void replayIsIndependentOfTheOrderHistoryArrives() {
+        // A submission sync can deliver months-old sessions after today's. The schedule must not
+        // depend on which order the server learned about them.
+        Instant day1 = Instant.parse("2026-01-01T09:00:00Z");
+        Instant day2 = Instant.parse("2026-01-02T09:00:00Z");
+        Instant day10 = Instant.parse("2026-01-10T09:00:00Z");
+        List<GradedEvent> chronological = List.of(
+                new GradedEvent(5, day1), new GradedEvent(5, day2), new GradedEvent(2, day10));
+        List<GradedEvent> reversed = List.of(
+                new GradedEvent(2, day10), new GradedEvent(5, day2), new GradedEvent(5, day1));
+
+        assertThat(scheduler.replay("two-sum", reversed))
+                .isEqualTo(scheduler.replay("two-sum", chronological));
+    }
+
+    @Test
+    void replayStartsTheClockAtTheFirstEvent() {
+        Instant reviewed = Instant.parse("2026-01-05T21:00:00Z");
+
+        ReviewSchedule result = scheduler.replay("two-sum", List.of(new GradedEvent(4, reviewed)));
+
+        assertThat(result.lastReviewedAt()).isEqualTo(reviewed);
+        assertThat(result.repetitions()).isEqualTo(1);
+        assertThat(result.dueAt()).isEqualTo(Instant.parse("2026-01-06T00:00:00Z"));
+    }
+
+    @Test
+    void replayRejectsAnEmptyHistory() {
+        assertThatThrownBy(() -> scheduler.replay("two-sum", List.of()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("two-sum");
     }
 }

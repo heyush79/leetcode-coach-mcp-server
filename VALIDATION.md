@@ -44,6 +44,7 @@ practice_sessions.max_hint_level` while existing session rows survive.
 - SM-2 interval arithmetic, the easiness floor, lapse handling, and every recall-grading rule.
 - Review scheduling across days, by advancing an injected clock rather than waiting.
 - The LeetCode GraphQL response contract and circuit-breaker behaviour, against WireMock.
+- The submission sync against a stubbed leetcode.com: paging, sitting inference, grading, schedule rebuild, idempotent re-sync, attachment to a coached session, the stub fallback, and the expired-cookie failure.
 - Maven build in GitHub Actions on every push and pull request.
 
 ## What the automated tests cannot cover
@@ -62,4 +63,7 @@ export LEETCODE_CSRF_TOKEN='...'
 mvn spring-boot:run
 ```
 
-Use the MCP tool `verify_leetcode_auth`, then call `get_problem` with `refresh=true`. Never put the cookie values in logs, screenshots, test fixtures, or commits.
+Use the MCP tool `verify_leetcode_auth`, then `sync_leetcode_submissions`. Confirm the report's
+`submissionsImported` matches what you expect, that `recent_practice_sessions` shows sittings with
+`source: LEETCODE`, and that a second call imports nothing. Never put the cookie values in logs,
+screenshots, test fixtures, or commits.

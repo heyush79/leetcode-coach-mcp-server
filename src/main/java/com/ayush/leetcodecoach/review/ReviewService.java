@@ -9,8 +9,10 @@ import com.ayush.leetcodecoach.domain.ReviewOutcome;
 import com.ayush.leetcodecoach.domain.ReviewSchedule;
 import com.ayush.leetcodecoach.domain.TopicMastery;
 import com.ayush.leetcodecoach.domain.TopicTag;
+import com.ayush.leetcodecoach.repository.PracticeRepository;
 import com.ayush.leetcodecoach.repository.ProblemRepository;
 import com.ayush.leetcodecoach.repository.ReviewRepository;
+import com.ayush.leetcodecoach.review.SpacedRepetitionScheduler.GradedEvent;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -25,9 +27,11 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * Decides when each problem should be practised again.
  *
- * <p>Completing a session produces a measured recall grade ({@link RecallGrader}), which advances
- * that problem's SM-2 state ({@link SpacedRepetitionScheduler}). Everything else here reads from
- * that state: what is due, and which topics keep lapsing.
+ * <p>Every completed session, whether driven through the assistant or synced from leetcode.com,
+ * yields a measured recall grade ({@link RecallGrader}). A problem's SM-2 state is rebuilt by
+ * replaying all of its grades in time order ({@link SpacedRepetitionScheduler#replay}), so the
+ * stored schedule is a cache over session history rather than a source of truth of its own.
+ * Everything else here reads from that cache: what is due, and which topics keep lapsing.
  */
 @Service
 public class ReviewService {
@@ -40,37 +44,68 @@ public class ReviewService {
 
     private final ReviewRepository reviewRepository;
     private final ProblemRepository problemRepository;
+    private final PracticeRepository practiceRepository;
     private final SpacedRepetitionScheduler scheduler;
     private final RecallGrader grader;
 
     public ReviewService(
             ReviewRepository reviewRepository,
             ProblemRepository problemRepository,
+            PracticeRepository practiceRepository,
             SpacedRepetitionScheduler scheduler,
             RecallGrader grader) {
         this.reviewRepository = reviewRepository;
         this.problemRepository = problemRepository;
+        this.practiceRepository = practiceRepository;
         this.scheduler = scheduler;
         this.grader = grader;
     }
 
-    /** Grades a finished session and advances the problem's review schedule. */
+    /** Grades a finished session and rebuilds the problem's review schedule to include it. */
     @Transactional
     public ReviewOutcome recordCompletedSession(PracticeSession session, List<Attempt> attempts, Instant completedAt) {
         RecallSignal signal = toSignal(session, attempts, completedAt);
         int grade = grader.grade(signal);
 
-        ReviewSchedule current = reviewRepository.find(session.titleSlug())
-                .orElseGet(() -> scheduler.initial(session.titleSlug(), completedAt));
-        ReviewSchedule updated = scheduler.next(current, grade, completedAt);
-        reviewRepository.upsert(updated);
+        ReviewSchedule schedule = rebuildSchedule(session.titleSlug())
+                // Unreachable once the session is stored as completed; kept so the method still
+                // answers sensibly if called for a session that was never persisted.
+                .orElseGet(() -> scheduler.next(scheduler.initial(session.titleSlug(), completedAt), grade, completedAt));
 
         return new ReviewOutcome(
                 session.titleSlug(),
                 grade,
                 grader.explain(signal, grade),
-                updated,
-                updated.intervalDays());
+                schedule,
+                schedule.intervalDays());
+    }
+
+    /**
+     * Recomputes a problem's schedule from every completed session it has, in time order.
+     *
+     * <p>Called whenever that history changes: a session completes, or a sync brings in
+     * submissions that may be older than the newest stored event. Returns empty, and removes any
+     * stale row, when the problem has no completed sessions left.
+     */
+    @Transactional
+    public Optional<ReviewSchedule> rebuildSchedule(String titleSlug) {
+        List<GradedEvent> events = new ArrayList<>();
+        for (PracticeSession session : practiceRepository.findSessionsForProblem(titleSlug)) {
+            if (!"COMPLETED".equals(session.status()) || session.completedAt() == null) {
+                continue;
+            }
+            RecallSignal signal = toSignal(
+                    session, practiceRepository.findAttempts(session.id()), session.completedAt());
+            events.add(new GradedEvent(grader.grade(signal), session.completedAt()));
+        }
+
+        if (events.isEmpty()) {
+            reviewRepository.delete(titleSlug);
+            return Optional.empty();
+        }
+        ReviewSchedule schedule = scheduler.replay(titleSlug, events);
+        reviewRepository.upsert(schedule);
+        return Optional.of(schedule);
     }
 
     /** Problems whose review is due now, most overdue first. */

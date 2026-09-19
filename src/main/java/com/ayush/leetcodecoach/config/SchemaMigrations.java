@@ -23,7 +23,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>This is deliberately the smallest thing that preserves existing practice history. A service
  * with more than one deployment target belongs on Flyway or Liquibase; a single embedded file does
- * not need a migration framework to add one column.
+ * not need a migration framework to add a few columns.
  */
 @Component
 @Order(SchemaMigrations.ORDER)
@@ -43,6 +43,13 @@ public class SchemaMigrations implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         addColumnIfMissing("practice_sessions", "max_hint_level", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing("practice_sessions", "source", "TEXT NOT NULL DEFAULT 'MANUAL'");
+        addColumnIfMissing("attempts", "source", "TEXT NOT NULL DEFAULT 'MANUAL'");
+        addColumnIfMissing("attempts", "leetcode_submission_id", "TEXT");
+        // Created here rather than in schema.sql: on an existing database that script runs before
+        // the column above is added, and an index on a missing column aborts startup.
+        jdbcTemplate.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_attempts_leetcode_submission_id "
+                + "ON attempts(leetcode_submission_id)");
     }
 
     private void addColumnIfMissing(String table, String column, String definition) {

@@ -85,7 +85,7 @@ class McpProtocolIntegrationTest {
                         "search_problems", "get_problem", "start_practice", "get_session_context",
                         "get_hint", "record_attempt", "complete_practice", "get_progress_stats",
                         "recommend_next_problem", "verify_leetcode_auth", "recent_practice_sessions",
-                        "get_due_reviews", "get_topic_mastery");
+                        "get_due_reviews", "get_topic_mastery", "sync_leetcode_submissions", "get_sync_status");
     }
 
     @Test
@@ -187,12 +187,27 @@ class McpProtocolIntegrationTest {
         // Regression: tools returning List<T> put a top-level array in structuredContent, which MCP
         // forbids. Claude Code rejected four tools this way while the server reported success.
         for (String name : List.of("search_problems", "get_due_reviews", "get_topic_mastery",
-                "recent_practice_sessions", "get_progress_stats", "verify_leetcode_auth")) {
+                "recent_practice_sessions", "get_progress_stats", "verify_leetcode_auth",
+                "sync_leetcode_submissions", "get_sync_status")) {
             Map<String, Object> arguments = name.equals("search_problems")
                     ? Map.of("difficulty", "EASY", "limit", 3)
                     : Map.of();
             callTool(name, arguments);
         }
+    }
+
+    @Test
+    void explainsWhySubmissionSyncIsUnavailableInsteadOfFailing() throws Exception {
+        // Remote access is off in this context, so the sync must decline with a reason the agent
+        // can relay, not a protocol error.
+        JsonNode report = callTool("sync_leetcode_submissions", Map.of());
+        assertThat(report.path("status").asString()).isEqualTo("SKIPPED");
+        assertThat(report.path("message").asString()).contains("disabled");
+
+        JsonNode status = callTool("get_sync_status", Map.of());
+        assertThat(status.path("credentialsConfigured").asBoolean()).isFalse();
+        assertThat(status.path("syncedSubmissions").asLong()).isZero();
+        assertThat(status.path("explanation").asString()).isNotBlank();
     }
 
     @Test
