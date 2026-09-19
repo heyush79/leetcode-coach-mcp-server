@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
@@ -126,7 +127,7 @@ class McpProtocolIntegrationTest {
         assertThat(stats.path("completedSessions").asLong()).isGreaterThanOrEqualTo(1);
         assertThat(stats.path("acceptedAttempts").asLong()).isGreaterThanOrEqualTo(1);
 
-        assertThat(callTool("recent_practice_sessions", Map.of())).isNotEmpty();
+        assertThat(callTool("recent_practice_sessions", Map.of()).path("sessions")).isNotEmpty();
     }
 
     @Test
@@ -146,15 +147,15 @@ class McpProtocolIntegrationTest {
         // Nothing was accepted, so recall grades 1 and the problem is scheduled to retry tomorrow.
         assertThat(completion.path("review").path("grade").asInt()).isEqualTo(1);
         assertThat(completion.path("review").path("nextReviewInDays").asInt()).isEqualTo(1);
-        assertThat(callTool("get_due_reviews", Map.of("limit", 10))).isEmpty();
+        assertThat(callTool("get_due_reviews", Map.of("limit", 10)).path("reviews")).isEmpty();
 
         AdjustableClockConfig.advanceDays(1);
 
-        assertThat(callTool("get_due_reviews", Map.of("limit", 10))
+        assertThat(callTool("get_due_reviews", Map.of("limit", 10)).path("reviews")
                 .valueStream().map(review -> review.path("titleSlug").asString()).toList())
                 .contains("coin-change");
 
-        assertThat(callTool("get_topic_mastery", Map.of())
+        assertThat(callTool("get_topic_mastery", Map.of()).path("topics")
                 .valueStream().map(topic -> topic.path("topicSlug").asString()).toList())
                 .contains("dynamic-programming");
 
@@ -169,7 +170,7 @@ class McpProtocolIntegrationTest {
     @Test
     void returnsResultsForToolsWithNullableFieldsWhileOffline() throws Exception {
         // Remote GraphQL is disabled, so these exercise the SQLite fallback paths.
-        assertThat(callTool("search_problems", Map.of("difficulty", "MEDIUM", "limit", 5)))
+        assertThat(callTool("search_problems", Map.of("difficulty", "MEDIUM", "limit", 5)).path("problems"))
                 .isNotEmpty();
 
         assertThat(callTool("recommend_next_problem", Map.of("difficulty", "EASY"))
@@ -179,6 +180,19 @@ class McpProtocolIntegrationTest {
         assertThat(callTool("verify_leetcode_auth", Map.of())
                 .path("credentialsConfigured").asBoolean())
                 .isFalse();
+    }
+
+    @Test
+    void everyToolReturnsStructuredContentThatIsAJsonObject() throws Exception {
+        // Regression: tools returning List<T> put a top-level array in structuredContent, which MCP
+        // forbids. Claude Code rejected four tools this way while the server reported success.
+        for (String name : List.of("search_problems", "get_due_reviews", "get_topic_mastery",
+                "recent_practice_sessions", "get_progress_stats", "verify_leetcode_auth")) {
+            Map<String, Object> arguments = name.equals("search_problems")
+                    ? Map.of("difficulty", "EASY", "limit", 3)
+                    : Map.of();
+            callTool(name, arguments);
+        }
     }
 
     @Test
@@ -202,6 +216,16 @@ class McpProtocolIntegrationTest {
         assertThat(result.path("isError").asBoolean())
                 .withFailMessage("Tool '%s' returned a protocol error: %s", name, text)
                 .isFalse();
+
+        // MCP requires structuredContent to be a JSON object. A tool returning a bare List produces a
+        // top-level array here, which spec-compliant clients reject even though the call "succeeded".
+        if (result.has("structuredContent")) {
+            assertThat(result.path("structuredContent").isObject())
+                    .withFailMessage(
+                            "Tool '%s' returned structuredContent that is not a JSON object: %s",
+                            name, result.path("structuredContent"))
+                    .isTrue();
+        }
 
         return objectMapper.readTree(text);
     }

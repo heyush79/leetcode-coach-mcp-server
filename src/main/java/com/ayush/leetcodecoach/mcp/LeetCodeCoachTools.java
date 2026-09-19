@@ -2,19 +2,20 @@ package com.ayush.leetcodecoach.mcp;
 
 import com.ayush.leetcodecoach.domain.Attempt;
 import com.ayush.leetcodecoach.domain.CompletionSummary;
-import com.ayush.leetcodecoach.domain.DueReview;
+import com.ayush.leetcodecoach.domain.DueReviewList;
 import com.ayush.leetcodecoach.domain.HintResponse;
 import com.ayush.leetcodecoach.domain.LeetCodeAuthStatus;
 import com.ayush.leetcodecoach.domain.PracticeSession;
+import com.ayush.leetcodecoach.domain.PracticeSessionList;
 import com.ayush.leetcodecoach.domain.Problem;
+import com.ayush.leetcodecoach.domain.ProblemSearchResult;
 import com.ayush.leetcodecoach.domain.ProgressStats;
 import com.ayush.leetcodecoach.domain.Recommendation;
 import com.ayush.leetcodecoach.domain.SessionContext;
-import com.ayush.leetcodecoach.domain.TopicMastery;
+import com.ayush.leetcodecoach.domain.TopicMasteryReport;
 import com.ayush.leetcodecoach.integration.LeetCodeGraphQlClient;
 import com.ayush.leetcodecoach.service.PracticeService;
 import com.ayush.leetcodecoach.service.ProblemCatalogService;
-import java.util.List;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
@@ -39,12 +40,13 @@ public class LeetCodeCoachTools {
             name = "search_problems",
             description = "Search LeetCode problems by keyword, difficulty, or topic. Uses live GraphQL and falls back to SQLite.",
             generateOutputSchema = true)
-    public List<Problem> searchProblems(
+    public ProblemSearchResult searchProblems(
             @McpToolParam(description = "Optional title keyword", required = false) String keyword,
             @McpToolParam(description = "Optional EASY, MEDIUM, or HARD", required = false) String difficulty,
             @McpToolParam(description = "Optional topic slug such as array, graph, or dynamic-programming", required = false) String topic,
             @McpToolParam(description = "Maximum number of results, from 1 to 50", required = false) Integer limit) {
-        return catalogService.searchProblems(keyword, difficulty, topic, limit == null ? 10 : limit);
+        return ProblemSearchResult.of(
+                catalogService.searchProblems(keyword, difficulty, topic, limit == null ? 10 : limit));
     }
 
     @McpTool(
@@ -148,9 +150,9 @@ public class LeetCodeCoachTools {
             name = "recent_practice_sessions",
             description = "List recently started practice sessions.",
             generateOutputSchema = true)
-    public List<PracticeSession> recentPracticeSessions(
+    public PracticeSessionList recentPracticeSessions(
             @McpToolParam(description = "Maximum number of sessions", required = false) Integer limit) {
-        return practiceService.recentSessions(limit);
+        return PracticeSessionList.of(practiceService.recentSessions(limit));
     }
 
     @McpTool(
@@ -158,9 +160,9 @@ public class LeetCodeCoachTools {
             description = "List problems whose spaced-repetition review is due now, most overdue first. "
                     + "Use this to decide what the user should re-solve before attempting anything new.",
             generateOutputSchema = true)
-    public List<DueReview> getDueReviews(
+    public DueReviewList getDueReviews(
             @McpToolParam(description = "Maximum number of reviews, from 1 to 50", required = false) Integer limit) {
-        return practiceService.dueReviews(limit);
+        return DueReviewList.of(practiceService.dueReviews(limit));
     }
 
     @McpTool(
@@ -168,7 +170,7 @@ public class LeetCodeCoachTools {
             description = "Report recall performance per topic, weakest first, based on review history. "
                     + "Use this to explain which concepts the user keeps forgetting.",
             generateOutputSchema = true)
-    public List<TopicMastery> getTopicMastery() {
-        return practiceService.topicMastery();
+    public TopicMasteryReport getTopicMastery() {
+        return TopicMasteryReport.of(practiceService.topicMastery());
     }
 }
