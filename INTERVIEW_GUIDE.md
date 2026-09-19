@@ -2,22 +2,25 @@
 
 ## 90-second explanation
 
-> I built a Java 17 Spring Boot MCP server that turns LeetCode practice into a scheduled curriculum
-> rather than a list of problems you grind and forget.
+> People solve hundreds of LeetCode problems and forget most of them. LeetCode's green checkmark
+> records that you solved something once, not whether you could solve it today, so preparation becomes
+> re-grinding a random queue while the topics you quietly lost go unnoticed.
 >
-> The interesting part is the review engine. When you finish a practice session, the server derives a
-> recall grade from what it observed — how many attempts you needed, how many hints you asked for,
-> whether you ran over your time budget — and feeds that into an SM-2 spaced-repetition schedule. So
-> `recommend_next_problem` does not just hand you an unsolved problem; it prefers one you are about to
-> forget, and falls back to a new problem in whichever topic your review history says is weakest.
+> I built a Java 17 Spring Boot server that fixes that for anyone practising with an AI assistant.
+> When you finish a session, it derives a recall grade from what it observed — how many attempts you
+> needed, how many hints you asked for, whether you ran over your time budget — and feeds that into an
+> SM-2 spaced-repetition schedule. So "what should I practise next" is answered with a problem you are
+> about to forget, or one in whichever topic your review history says is weakest, rather than the next
+> unsolved item in a list.
 >
-> The reason it derives the grade instead of asking for one is that a learner who just read a hint is a
-> poor judge of whether they would have recalled the idea unaided. The session already measured that.
+> It derives the grade instead of asking for one because a learner who just read a hint is a poor judge
+> of whether they would have recalled the idea unaided. The session already measured that.
 >
-> Around that, Spring AI exposes thirteen annotated Java methods as MCP tools over Streamable HTTP.
-> Problem metadata comes from LeetCode's unofficial GraphQL endpoint through Spring for GraphQL, behind
-> a circuit breaker, with SQLite as a cache-first fallback so the tools keep working when LeetCode does
-> not. I deliberately did not execute submitted code in-process, because that needs a sandboxed judge.
+> I exposed it over MCP rather than building a web app, because the interface should be the assistant
+> you already have open. Spring AI turns thirteen annotated Java methods into MCP tools over Streamable
+> HTTP. Problem metadata comes from LeetCode's unofficial GraphQL endpoint behind a circuit breaker,
+> with SQLite as a cache-first fallback so the tools keep working when LeetCode does not. I deliberately
+> did not execute submitted code in-process, because that needs a sandboxed judge.
 
 ## Resume bullet you can defend
 

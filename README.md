@@ -2,13 +2,58 @@
 
 > Unofficial educational project. It is not affiliated with or endorsed by LeetCode.
 
-A Java 17 Spring Boot application that turns LeetCode practice into a scheduled curriculum and exposes it to LLM agents through the Model Context Protocol (MCP).
+## The problem
 
-The core is a spaced-repetition engine: finishing a practice session produces a recall grade derived from what the session observed — attempts needed, hints revealed, time taken — which drives an SM-2 review schedule. Recommendations prefer a problem you are about to forget over a problem you have never seen.
+You solve Number of Islands in March. You feel good about it. In June, in an interview, you cannot
+reproduce it.
 
-Around that sit Spring AI's Streamable HTTP MCP server, SQLite persistence, and a LeetCode GraphQL client behind a circuit breaker, with optional session-cookie authentication.
+That is the normal outcome of how people practise. LeetCode shows a green checkmark forever, which
+records that you solved a problem *once*, not whether you could solve it *today*. So preparation turns
+into re-grinding a random queue: time spent on problems you already know cold, while the topics you
+quietly lost go unnoticed until an interviewer finds them for you.
 
-This repository is intentionally interview-sized: substantial enough to demonstrate protocol integration, persistence, external API handling, and failure design, but not padded with seventeen microservices whose main job is forwarding JSON to one another.
+Practising with an AI assistant does not fix this on its own. The assistant has no memory between
+sessions. It does not know you needed three hints on dynamic programming last week, it will hand you a
+full solution the moment you sound stuck, and nothing it learns about you survives closing the tab.
+You get a conversation, not a coach.
+
+## How this solves it
+
+This server gives an AI assistant the memory and the judgement it is missing.
+
+1. **It remembers.** Every session, attempt, hint, and verdict is persisted in SQLite and survives
+   restarts.
+2. **It grades recall from evidence.** Finishing a session produces a 0-5 recall grade derived from
+   what actually happened: attempts needed, hints revealed, time against your own budget. Not from
+   asking how it went, because someone who just read a hint is a poor judge of that.
+3. **It schedules.** That grade drives an SM-2 spaced-repetition interval. A clean solve moves further
+   out; a struggle comes back tomorrow.
+4. **It notices weak topics.** Recall is aggregated per topic tag and discounted by how often you have
+   forgotten it, so "depth-first search" can sit at 0.10 while "hash table" sits at 1.00.
+5. **It plugs into the assistant you already use.** Every capability above is exposed over the Model
+   Context Protocol, so Claude, Cursor, or any MCP client becomes the interface.
+
+The result is that instead of asking for "a medium graph problem", you ask **what should I practise
+today?** and get back *"Number of Islands - you failed it two days ago after three hints, and
+depth-first search is your weakest topic."*
+
+## Why an MCP server rather than a web app
+
+A web app would be one more tab you stop opening after a fortnight. MCP puts the practice history and
+the scheduling behind the assistant you already have open, so the coaching shows up inside a
+conversation you were going to have anyway.
+
+There is no user interface in this repository, and that is deliberate. The client is the AI assistant.
+The REST endpoints exist only for debugging.
+
+## Built with
+
+Java 17, Spring Boot 4.1, Spring AI's Streamable HTTP MCP server, Spring for GraphQL against
+LeetCode's unofficial endpoint behind a Resilience4j circuit breaker, and SQLite for persistence.
+
+This repository is intentionally interview-sized: substantial enough to demonstrate protocol
+integration, persistence, external API handling, and failure design, but not padded with seventeen
+microservices whose main job is forwarding JSON to one another.
 
 ## What it does
 
