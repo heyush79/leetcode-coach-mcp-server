@@ -123,7 +123,7 @@ public class ProblemCatalogService {
     private Problem fromRemoteSummary(RemoteProblemSummary remote) {
         return new Problem(
                 null,
-                remote.frontendQuestionId(),
+                remote.questionFrontendId(),
                 remote.title(),
                 remote.titleSlug(),
                 Difficulty.from(remote.difficulty()),

@@ -184,6 +184,7 @@ Stores submitted source code, verdict, optional runtime/memory, complexity claim
 - Duplicate problem sync: SQLite `ON CONFLICT(title_slug) DO UPDATE` performs an idempotent upsert.
 - Concurrent SQLite writes: Hikari pool size is one because this is an embedded single-node service.
 - Invalid session mutation: reject attempts after a session is completed.
+- Nullable tool results: records expose optional fields as `@Nullable` and serialize with `NON_NULL`, because Spring AI's generated output schema marks every component required and rejects a null on the wire.
 
 ## What the server deliberately does not do
 
@@ -218,7 +219,15 @@ The included `.gitignore` covers these files.
 mvn clean verify
 ```
 
-The test suite covers persisted session creation, progressive hints, streak calculation, and a full offline Spring Boot workflow against an in-memory SQLite database. A reasonable next extension is a WireMock-based contract test for LeetCode GraphQL responses.
+The suite has three layers:
+
+- `PracticeServiceTest` covers session creation, progressive hints, and streak calculation with mocked collaborators.
+- `ApplicationIntegrationTest` runs an offline workflow through the service layer against in-memory SQLite.
+- `McpProtocolIntegrationTest` boots the server on a random port and drives the real `/mcp` endpoint over JSON-RPC, asserting that all eleven tools return without a protocol error.
+
+The third layer exists because the first two cannot see the MCP boundary. Spring AI validates every tool result against a generated output schema, so a tool can succeed in Java and still be rejected on the wire. Only a test that speaks the protocol catches that.
+
+A reasonable next extension is a WireMock-based contract test for LeetCode GraphQL responses.
 
 ## Main design trade-offs
 

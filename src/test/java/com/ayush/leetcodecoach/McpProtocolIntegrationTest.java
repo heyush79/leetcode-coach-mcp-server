@@ -1,0 +1,199 @@
+package com.ayush.leetcodecoach;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+/**
+ * Drives the real Streamable HTTP MCP endpoint over JSON-RPC.
+ *
+ * <p>The service-level tests call Java methods directly, so they cannot observe the MCP layer:
+ * tool registration, argument binding, and — the reason this class exists — output schema
+ * validation. A tool whose result carries a null field is rejected by the protocol even though
+ * the underlying service returned normally, so every tool is asserted through the wire here.
+ */
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = {
+                "leetcode.remote-enabled=false",
+                "spring.datasource.url=jdbc:sqlite:file:leetcode-coach-mcp-protocol?mode=memory&cache=shared"
+        })
+class McpProtocolIntegrationTest {
+
+    private static final String PROTOCOL_VERSION = "2025-06-18";
+
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @LocalServerPort
+    private int port;
+
+    private String sessionId;
+
+    @BeforeEach
+    void initializeSession() throws Exception {
+        JsonNode initialize = rpc("initialize", Map.of(
+                "protocolVersion", PROTOCOL_VERSION,
+                "capabilities", Map.of(),
+                "clientInfo", Map.of("name", "integration-test", "version", "1.0.0")), 1);
+
+        assertThat(initialize.path("result").path("serverInfo").path("name").asString())
+                .isEqualTo("leetcode-coach");
+        assertThat(sessionId).isNotBlank();
+
+        rpc("notifications/initialized", null, null);
+    }
+
+    @Test
+    void exposesEveryToolOverTheProtocol() throws Exception {
+        JsonNode tools = rpc("tools/list", Map.of(), 2).path("result").path("tools");
+
+        assertThat(tools.valueStream().map(tool -> tool.path("name").asString()).toList())
+                .containsExactlyInAnyOrder(
+                        "search_problems", "get_problem", "start_practice", "get_session_context",
+                        "get_hint", "record_attempt", "complete_practice", "get_progress_stats",
+                        "recommend_next_problem", "verify_leetcode_auth", "recent_practice_sessions");
+    }
+
+    @Test
+    void runsTheFullCoachingWorkflowWithoutProtocolErrors() throws Exception {
+        // A freshly started session has a null completedAt and null notes, and a seeded problem has
+        // a null acceptanceRate. Each one previously failed output schema validation at this layer.
+        assertThat(callTool("get_problem", Map.of("titleSlug", "number-of-islands")).path("title").asString())
+                .isEqualTo("Number of Islands");
+
+        JsonNode session = callTool("start_practice",
+                Map.of("titleSlug", "number-of-islands", "targetMinutes", 30));
+        String practiceSessionId = session.path("id").asString();
+        assertThat(practiceSessionId).isNotBlank();
+        assertThat(session.path("status").asString()).isEqualTo("ACTIVE");
+
+        JsonNode hint = callTool("get_hint", Map.of("sessionId", practiceSessionId, "level", 1));
+        assertThat(hint.path("hints")).hasSize(1);
+
+        JsonNode attempt = callTool("record_attempt", Map.of(
+                "sessionId", practiceSessionId,
+                "language", "python",
+                "code", "def num_islands(grid): return 0",
+                "verdict", "ACCEPTED"));
+        assertThat(attempt.path("verdict").asString()).isEqualTo("ACCEPTED");
+
+        assertThat(callTool("get_session_context", Map.of("sessionId", practiceSessionId))
+                .path("attempts")).hasSize(1);
+
+        assertThat(callTool("complete_practice",
+                Map.of("sessionId", practiceSessionId, "notes", "Mark cells visited when enqueuing"))
+                .path("status").asString())
+                .isEqualTo("COMPLETED");
+
+        JsonNode stats = callTool("get_progress_stats", Map.of());
+        assertThat(stats.path("completedSessions").asLong()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.path("acceptedAttempts").asLong()).isGreaterThanOrEqualTo(1);
+
+        assertThat(callTool("recent_practice_sessions", Map.of())).isNotEmpty();
+    }
+
+    @Test
+    void returnsResultsForToolsWithNullableFieldsWhileOffline() throws Exception {
+        // Remote GraphQL is disabled, so these exercise the SQLite fallback paths.
+        assertThat(callTool("search_problems", Map.of("difficulty", "MEDIUM", "limit", 5)))
+                .isNotEmpty();
+
+        assertThat(callTool("recommend_next_problem", Map.of("difficulty", "EASY"))
+                .path("problem").path("titleSlug").asString())
+                .isNotBlank();
+
+        assertThat(callTool("verify_leetcode_auth", Map.of())
+                .path("credentialsConfigured").asBoolean())
+                .isFalse();
+    }
+
+    @Test
+    void reportsToolErrorsWithoutBreakingTheSession() throws Exception {
+        JsonNode result = rpc("tools/call",
+                Map.of("name", "get_session_context", "arguments", Map.of("sessionId", "does-not-exist")), 10)
+                .path("result");
+
+        assertThat(result.path("isError").asBoolean()).isTrue();
+
+        // The session must still be usable after a failed tool call.
+        assertThat(callTool("get_progress_stats", Map.of()).path("totalAttempts").asLong())
+                .isGreaterThanOrEqualTo(0);
+    }
+
+    /** Calls a tool and returns its parsed structured result, failing if the protocol reported an error. */
+    private JsonNode callTool(String name, Map<String, Object> arguments) throws Exception {
+        JsonNode result = rpc("tools/call", Map.of("name", name, "arguments", arguments), 3).path("result");
+        String text = result.path("content").path(0).path("text").asString();
+
+        assertThat(result.path("isError").asBoolean())
+                .withFailMessage("Tool '%s' returned a protocol error: %s", name, text)
+                .isFalse();
+
+        return objectMapper.readTree(text);
+    }
+
+    private JsonNode rpc(String method, Map<String, Object> params, Integer id) throws Exception {
+        var payload = new java.util.LinkedHashMap<String, Object>();
+        payload.put("jsonrpc", "2.0");
+        payload.put("method", method);
+        if (id != null) {
+            payload.put("id", id);
+        }
+        if (params != null) {
+            payload.put("params", params);
+        }
+
+        HttpRequest.Builder request = HttpRequest.newBuilder()
+                .uri(URI.create("http://127.0.0.1:" + port + "/mcp"))
+                .timeout(Duration.ofSeconds(20))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(payload)));
+
+        if (sessionId != null) {
+            request.header("Mcp-Session-Id", sessionId);
+        }
+
+        HttpResponse<String> response = httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode())
+                .withFailMessage("%s returned HTTP %d: %s", method, response.statusCode(), response.body())
+                .isBetween(200, 299);
+
+        response.headers().firstValue("Mcp-Session-Id").ifPresent(value -> this.sessionId = value);
+
+        return parse(response.body(), method);
+    }
+
+    /** Streamable HTTP may answer with plain JSON or with a single SSE {@code data:} frame. */
+    private JsonNode parse(String body, String method) throws IOException {
+        if (body == null || body.isBlank()) {
+            return objectMapper.createObjectNode();
+        }
+        for (String line : body.split("\\R")) {
+            if (line.startsWith("data:")) {
+                return objectMapper.readTree(line.substring(5).trim());
+            }
+        }
+        JsonNode node = objectMapper.readTree(body);
+        assertThat(node.has("error"))
+                .withFailMessage("%s returned a JSON-RPC error: %s", method, body)
+                .isFalse();
+        return node;
+    }
+}

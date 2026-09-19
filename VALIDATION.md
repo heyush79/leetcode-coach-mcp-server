@@ -36,7 +36,14 @@ Then connect an MCP client to `http://127.0.0.1:8080/mcp`, list tools, and run t
 - Seed-data startup without network access.
 - Catalog fallback when remote GraphQL is disabled.
 - Practice-session, attempt, completion, and progress persistence.
+- The live `/mcp` endpoint over JSON-RPC: initialize, `tools/list`, and every one of the eleven tools, including output schema validation and tool-error reporting.
 - Maven build in GitHub Actions on every push and pull request.
+
+## What the automated tests cannot cover
+
+The live LeetCode GraphQL call is excluded on purpose. It depends on an unofficial third-party
+schema and on credentials that expire, so it is verified by hand using the steps below rather
+than allowed to make CI fail for reasons unrelated to this code.
 
 ## External integration check
 

@@ -16,7 +16,7 @@ query problemsetQuestionListV2(
   ) {
     total: totalLength
     questions {
-      frontendQuestionId: questionFrontendId
+      questionFrontendId
       title
       titleSlug
       difficulty
