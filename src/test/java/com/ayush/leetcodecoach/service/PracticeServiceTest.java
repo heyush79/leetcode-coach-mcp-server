@@ -9,7 +9,10 @@ import com.ayush.leetcodecoach.domain.PracticeSession;
 import com.ayush.leetcodecoach.domain.Problem;
 import com.ayush.leetcodecoach.domain.TopicTag;
 import com.ayush.leetcodecoach.repository.PracticeRepository;
+import com.ayush.leetcodecoach.review.ReviewService;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -29,11 +32,16 @@ class PracticeServiceTest {
     @Mock
     private PracticeRepository practiceRepository;
 
+    @Mock
+    private ReviewService reviewService;
+
+    private final Clock clock = Clock.fixed(Instant.parse("2026-03-10T12:00:00Z"), ZoneOffset.UTC);
+
     @Test
     void startsPersistedPracticeSession() {
         Problem problem = problem(List.of("Use a map"));
         when(catalogService.getProblem("two-sum", false)).thenReturn(problem);
-        PracticeService service = new PracticeService(catalogService, practiceRepository);
+        PracticeService service = new PracticeService(catalogService, practiceRepository, reviewService, clock);
 
         PracticeSession session = service.startPractice("two-sum", 45);
 
@@ -49,11 +57,11 @@ class PracticeServiceTest {
     void returnsProgressiveHintWithoutSolutionCode() {
         Problem problem = problem(List.of("Use a map", "Search for the complement"));
         PracticeSession session = new PracticeSession(
-                "session-1", "two-sum", "ACTIVE", Instant.now(), null, 30, null);
+                "session-1", "two-sum", "ACTIVE", Instant.now(), null, 30, null, 0);
         when(practiceRepository.findSession("session-1")).thenReturn(Optional.of(session));
         when(practiceRepository.findAttempts("session-1")).thenReturn(List.of());
         when(catalogService.getProblem("two-sum", false)).thenReturn(problem);
-        PracticeService service = new PracticeService(catalogService, practiceRepository);
+        PracticeService service = new PracticeService(catalogService, practiceRepository, reviewService, clock);
 
         var response = service.getHint("session-1", 2);
 
@@ -63,13 +71,13 @@ class PracticeServiceTest {
 
     @Test
     void calculatesStreakFromTodayBackwards() {
-        LocalDate today = LocalDate.now(java.time.ZoneOffset.UTC);
+        LocalDate today = LocalDate.now(clock);
         when(practiceRepository.completionDates()).thenReturn(List.of(today, today.minusDays(1), today.minusDays(2)));
         when(practiceRepository.completedByDifficulty()).thenReturn(Map.of("EASY", 2L));
         when(practiceRepository.completedSessionCount()).thenReturn(3L);
         when(practiceRepository.acceptedAttemptCount()).thenReturn(2L);
         when(practiceRepository.totalAttemptCount()).thenReturn(4L);
-        PracticeService service = new PracticeService(catalogService, practiceRepository);
+        PracticeService service = new PracticeService(catalogService, practiceRepository, reviewService, clock);
 
         var stats = service.getProgressStats();
 

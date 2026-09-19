@@ -29,6 +29,10 @@ curl --fail "http://127.0.0.1:8080/api/problems?difficulty=MEDIUM&limit=5"
 
 Then connect an MCP client to `http://127.0.0.1:8080/mcp`, list tools, and run the workflow in `docs/DEMO.md`.
 
+To check the schema migration against an existing database, run the server over a copy of a database
+created by an earlier version and confirm the log reports `Added missing column
+practice_sessions.max_hint_level` while existing session rows survive.
+
 ## What is covered
 
 - Plain Java domain compilation on Java 17.
@@ -36,7 +40,10 @@ Then connect an MCP client to `http://127.0.0.1:8080/mcp`, list tools, and run t
 - Seed-data startup without network access.
 - Catalog fallback when remote GraphQL is disabled.
 - Practice-session, attempt, completion, and progress persistence.
-- The live `/mcp` endpoint over JSON-RPC: initialize, `tools/list`, and every one of the eleven tools, including output schema validation and tool-error reporting.
+- The live `/mcp` endpoint over JSON-RPC: initialize, `tools/list`, and every one of the thirteen tools, including output schema validation and tool-error reporting.
+- SM-2 interval arithmetic, the easiness floor, lapse handling, and every recall-grading rule.
+- Review scheduling across days, by advancing an injected clock rather than waiting.
+- The LeetCode GraphQL response contract and circuit-breaker behaviour, against WireMock.
 - Maven build in GitHub Actions on every push and pull request.
 
 ## What the automated tests cannot cover

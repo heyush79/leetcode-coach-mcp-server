@@ -27,8 +27,8 @@ public class PracticeRepository {
     public void insertSession(PracticeSession session) {
         jdbcTemplate.update("""
                         INSERT INTO practice_sessions
-                        (id, title_slug, status, started_at, completed_at, target_minutes, notes)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (id, title_slug, status, started_at, completed_at, target_minutes, notes, max_hint_level)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                 session.id(),
                 session.titleSlug(),
@@ -36,7 +36,16 @@ public class PracticeRepository {
                 session.startedAt().toString(),
                 session.completedAt() == null ? null : session.completedAt().toString(),
                 session.targetMinutes(),
-                session.notes());
+                session.notes(),
+                session.maxHintLevel());
+    }
+
+    /** Records the deepest hint the user has asked for; hint level never decreases. */
+    public void recordHintLevel(String sessionId, int level) {
+        jdbcTemplate.update(
+                "UPDATE practice_sessions SET max_hint_level = MAX(max_hint_level, ?) WHERE id = ?",
+                level,
+                sessionId);
     }
 
     public Optional<PracticeSession> findSession(String sessionId) {
@@ -138,7 +147,8 @@ public class PracticeRepository {
                 Instant.parse(rs.getString("started_at")),
                 completedAt == null ? null : Instant.parse(completedAt),
                 getNullableInteger(rs, "target_minutes"),
-                rs.getString("notes"));
+                rs.getString("notes"),
+                rs.getInt("max_hint_level"));
     }
 
     private Attempt mapAttempt(ResultSet rs, int rowNum) throws SQLException {

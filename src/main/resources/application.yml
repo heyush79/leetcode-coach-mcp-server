@@ -53,6 +53,12 @@ leetcode:
   user-agent: ${LEETCODE_USER_AGENT:LeetCodeCoachMCP/1.0}
   remote-enabled: ${LEETCODE_REMOTE_ENABLED:true}
   timeout-seconds: ${LEETCODE_TIMEOUT_SECONDS:8}
+  # Circuit breaker around the unofficial GraphQL endpoint. Once open, tool calls fall back to
+  # SQLite immediately instead of waiting out the timeout on every request.
+  failure-rate-threshold: ${LEETCODE_FAILURE_RATE_THRESHOLD:50}
+  minimum-calls: ${LEETCODE_MINIMUM_CALLS:5}
+  sliding-window-size: ${LEETCODE_SLIDING_WINDOW_SIZE:10}
+  open-state-seconds: ${LEETCODE_OPEN_STATE_SECONDS:30}
 
 app:
   mcp-access:

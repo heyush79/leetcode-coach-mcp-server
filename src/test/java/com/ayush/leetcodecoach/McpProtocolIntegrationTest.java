@@ -7,12 +7,20 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -28,8 +36,11 @@ import tools.jackson.databind.ObjectMapper;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "leetcode.remote-enabled=false",
-                "spring.datasource.url=jdbc:sqlite:file:leetcode-coach-mcp-protocol?mode=memory&cache=shared"
+                "spring.datasource.url=jdbc:sqlite:file:leetcode-coach-mcp-protocol?mode=memory&cache=shared",
+                // Lets AdjustableClockConfig replace the application's system clock.
+                "spring.main.allow-bean-definition-overriding=true"
         })
+@Import(McpProtocolIntegrationTest.AdjustableClockConfig.class)
 class McpProtocolIntegrationTest {
 
     private static final String PROTOCOL_VERSION = "2025-06-18";
@@ -44,6 +55,11 @@ class McpProtocolIntegrationTest {
     private int port;
 
     private String sessionId;
+
+    @BeforeEach
+    void resetClock() {
+        AdjustableClockConfig.now.set(Instant.parse("2026-03-10T09:00:00Z"));
+    }
 
     @BeforeEach
     void initializeSession() throws Exception {
@@ -67,7 +83,8 @@ class McpProtocolIntegrationTest {
                 .containsExactlyInAnyOrder(
                         "search_problems", "get_problem", "start_practice", "get_session_context",
                         "get_hint", "record_attempt", "complete_practice", "get_progress_stats",
-                        "recommend_next_problem", "verify_leetcode_auth", "recent_practice_sessions");
+                        "recommend_next_problem", "verify_leetcode_auth", "recent_practice_sessions",
+                        "get_due_reviews", "get_topic_mastery");
     }
 
     @Test
@@ -96,16 +113,57 @@ class McpProtocolIntegrationTest {
         assertThat(callTool("get_session_context", Map.of("sessionId", practiceSessionId))
                 .path("attempts")).hasSize(1);
 
-        assertThat(callTool("complete_practice",
-                Map.of("sessionId", practiceSessionId, "notes", "Mark cells visited when enqueuing"))
-                .path("status").asString())
-                .isEqualTo("COMPLETED");
+        JsonNode completion = callTool("complete_practice",
+                Map.of("sessionId", practiceSessionId, "notes", "Mark cells visited when enqueuing"));
+        assertThat(completion.path("session").path("status").asString()).isEqualTo("COMPLETED");
+
+        // Solved on the first attempt after one hint, so recall grades 4 and the review is scheduled.
+        assertThat(completion.path("review").path("grade").asInt()).isEqualTo(4);
+        assertThat(completion.path("review").path("nextReviewInDays").asInt()).isEqualTo(1);
+        assertThat(completion.path("review").path("rationale").asString()).contains("1 hint");
 
         JsonNode stats = callTool("get_progress_stats", Map.of());
         assertThat(stats.path("completedSessions").asLong()).isGreaterThanOrEqualTo(1);
         assertThat(stats.path("acceptedAttempts").asLong()).isGreaterThanOrEqualTo(1);
 
         assertThat(callTool("recent_practice_sessions", Map.of())).isNotEmpty();
+    }
+
+    @Test
+    void schedulesAndReportsSpacedRepetitionReviews() throws Exception {
+        String practiceSessionId = callTool("start_practice",
+                Map.of("titleSlug", "coin-change", "targetMinutes", 30)).path("id").asString();
+
+        callTool("record_attempt", Map.of(
+                "sessionId", practiceSessionId,
+                "language", "python",
+                "code", "def coin_change(coins, amount): return -1",
+                "verdict", "WRONG_ANSWER"));
+
+        JsonNode completion = callTool("complete_practice",
+                Map.of("sessionId", practiceSessionId, "notes", "Revisit the DP state"));
+
+        // Nothing was accepted, so recall grades 1 and the problem is scheduled to retry tomorrow.
+        assertThat(completion.path("review").path("grade").asInt()).isEqualTo(1);
+        assertThat(completion.path("review").path("nextReviewInDays").asInt()).isEqualTo(1);
+        assertThat(callTool("get_due_reviews", Map.of("limit", 10))).isEmpty();
+
+        AdjustableClockConfig.advanceDays(1);
+
+        assertThat(callTool("get_due_reviews", Map.of("limit", 10))
+                .valueStream().map(review -> review.path("titleSlug").asString()).toList())
+                .contains("coin-change");
+
+        assertThat(callTool("get_topic_mastery", Map.of())
+                .valueStream().map(topic -> topic.path("topicSlug").asString()).toList())
+                .contains("dynamic-programming");
+
+        // A due review outranks an unattempted problem.
+        assertThat(callTool("recommend_next_problem", Map.of()).path("reason").asString())
+                .contains("Due for spaced-repetition review");
+
+        assertThat(callTool("get_progress_stats", Map.of()).path("reviewsDue").asLong())
+                .isGreaterThanOrEqualTo(1);
     }
 
     @Test
@@ -195,5 +253,41 @@ class McpProtocolIntegrationTest {
                 .withFailMessage("%s returned a JSON-RPC error: %s", method, body)
                 .isFalse();
         return node;
+    }
+
+    /**
+     * Replaces the application clock so the test can advance days instead of waiting for them.
+     * Review scheduling is measured in days, which is otherwise untestable in a single run.
+     */
+    @TestConfiguration(proxyBeanMethods = false)
+    static class AdjustableClockConfig {
+
+        static final AtomicReference<Instant> now =
+                new AtomicReference<>(Instant.parse("2026-03-10T09:00:00Z"));
+
+        static void advanceDays(int days) {
+            now.updateAndGet(instant -> instant.plus(Duration.ofDays(days)));
+        }
+
+        @Bean
+        Clock clock() {
+            return new Clock() {
+
+                @Override
+                public ZoneId getZone() {
+                    return ZoneOffset.UTC;
+                }
+
+                @Override
+                public Clock withZone(ZoneId zone) {
+                    return this;
+                }
+
+                @Override
+                public Instant instant() {
+                    return now.get();
+                }
+            };
+        }
     }
 }

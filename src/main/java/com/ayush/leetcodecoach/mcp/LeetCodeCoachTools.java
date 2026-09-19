@@ -1,6 +1,8 @@
 package com.ayush.leetcodecoach.mcp;
 
 import com.ayush.leetcodecoach.domain.Attempt;
+import com.ayush.leetcodecoach.domain.CompletionSummary;
+import com.ayush.leetcodecoach.domain.DueReview;
 import com.ayush.leetcodecoach.domain.HintResponse;
 import com.ayush.leetcodecoach.domain.LeetCodeAuthStatus;
 import com.ayush.leetcodecoach.domain.PracticeSession;
@@ -8,6 +10,7 @@ import com.ayush.leetcodecoach.domain.Problem;
 import com.ayush.leetcodecoach.domain.ProgressStats;
 import com.ayush.leetcodecoach.domain.Recommendation;
 import com.ayush.leetcodecoach.domain.SessionContext;
+import com.ayush.leetcodecoach.domain.TopicMastery;
 import com.ayush.leetcodecoach.integration.LeetCodeGraphQlClient;
 import com.ayush.leetcodecoach.service.PracticeService;
 import com.ayush.leetcodecoach.service.ProblemCatalogService;
@@ -104,9 +107,10 @@ public class LeetCodeCoachTools {
 
     @McpTool(
             name = "complete_practice",
-            description = "Mark a practice session complete and store retrospective notes.",
+            description = "Mark a practice session complete, store retrospective notes, and schedule the next "
+                    + "spaced-repetition review. Recall is graded from attempts, hints used, and time taken.",
             generateOutputSchema = true)
-    public PracticeSession completePractice(
+    public CompletionSummary completePractice(
             @McpToolParam(description = "Practice session UUID", required = true) String sessionId,
             @McpToolParam(description = "What was learned and what to revise", required = false) String notes) {
         return practiceService.completePractice(sessionId, notes);
@@ -114,7 +118,8 @@ public class LeetCodeCoachTools {
 
     @McpTool(
             name = "get_progress_stats",
-            description = "Get persisted practice totals, accepted attempts, active days, streak, and difficulty split.",
+            description = "Get persisted practice totals, accepted attempts, active days, streak, reviews due now, "
+                    + "and difficulty split.",
             generateOutputSchema = true)
     public ProgressStats getProgressStats() {
         return practiceService.getProgressStats();
@@ -122,7 +127,8 @@ public class LeetCodeCoachTools {
 
     @McpTool(
             name = "recommend_next_problem",
-            description = "Recommend an unattempted problem, optionally constrained by difficulty and topic.",
+            description = "Recommend what to practise next: a problem due for review first, then a new problem "
+                    + "in the weakest topic, then any unattempted problem. Optionally constrained by difficulty and topic.",
             generateOutputSchema = true)
     public Recommendation recommendNextProblem(
             @McpToolParam(description = "Optional EASY, MEDIUM, or HARD", required = false) String difficulty,
@@ -145,5 +151,24 @@ public class LeetCodeCoachTools {
     public List<PracticeSession> recentPracticeSessions(
             @McpToolParam(description = "Maximum number of sessions", required = false) Integer limit) {
         return practiceService.recentSessions(limit);
+    }
+
+    @McpTool(
+            name = "get_due_reviews",
+            description = "List problems whose spaced-repetition review is due now, most overdue first. "
+                    + "Use this to decide what the user should re-solve before attempting anything new.",
+            generateOutputSchema = true)
+    public List<DueReview> getDueReviews(
+            @McpToolParam(description = "Maximum number of reviews, from 1 to 50", required = false) Integer limit) {
+        return practiceService.dueReviews(limit);
+    }
+
+    @McpTool(
+            name = "get_topic_mastery",
+            description = "Report recall performance per topic, weakest first, based on review history. "
+                    + "Use this to explain which concepts the user keeps forgetting.",
+            generateOutputSchema = true)
+    public List<TopicMastery> getTopicMastery() {
+        return practiceService.topicMastery();
     }
 }

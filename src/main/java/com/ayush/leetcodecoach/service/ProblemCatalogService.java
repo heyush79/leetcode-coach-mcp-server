@@ -88,6 +88,11 @@ public class ProblemCatalogService {
         return problemRepository.recommendUnattempted(normalizedDifficulty, topic);
     }
 
+    /** Reads only what SQLite already holds, without touching the remote API. */
+    public Optional<Problem> findCached(String titleSlug) {
+        return problemRepository.findBySlug(normalizeSlug(titleSlug));
+    }
+
     public long count() {
         return problemRepository.count();
     }

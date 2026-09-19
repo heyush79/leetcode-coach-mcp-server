@@ -2,10 +2,13 @@ package com.ayush.leetcodecoach.integration;
 
 import com.ayush.leetcodecoach.config.LeetCodeProperties;
 import com.ayush.leetcodecoach.domain.LeetCodeAuthStatus;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 import org.springframework.graphql.client.HttpSyncGraphQlClient;
 import org.springframework.stereotype.Component;
 
@@ -14,24 +17,26 @@ public class LeetCodeGraphQlClient {
 
     private final HttpSyncGraphQlClient graphQlClient;
     private final LeetCodeProperties properties;
+    private final CircuitBreaker circuitBreaker;
 
-    public LeetCodeGraphQlClient(HttpSyncGraphQlClient graphQlClient, LeetCodeProperties properties) {
+    public LeetCodeGraphQlClient(
+            HttpSyncGraphQlClient graphQlClient,
+            LeetCodeProperties properties,
+            CircuitBreaker leetCodeCircuitBreaker) {
         this.graphQlClient = graphQlClient;
         this.properties = properties;
+        this.circuitBreaker = leetCodeCircuitBreaker;
     }
 
     public Optional<RemoteProblem> fetchProblem(String titleSlug) {
         ensureRemoteEnabled();
-        try {
-            RemoteProblem problem = graphQlClient.documentName("questionData")
-                    .variable("titleSlug", titleSlug)
-                    .retrieveSync("question")
-                    .toEntity(RemoteProblem.class);
-            return Optional.ofNullable(problem);
-        }
-        catch (RuntimeException ex) {
-            throw new LeetCodeIntegrationException("Unable to fetch problem '" + titleSlug + "' from LeetCode", ex);
-        }
+        RemoteProblem problem = call(
+                "Unable to fetch problem '" + titleSlug + "' from LeetCode",
+                () -> graphQlClient.documentName("questionData")
+                        .variable("titleSlug", titleSlug)
+                        .retrieveSync("question")
+                        .toEntity(RemoteProblem.class));
+        return Optional.ofNullable(problem);
     }
 
     public List<RemoteProblemSummary> searchProblems(
@@ -64,16 +69,13 @@ public class LeetCodeGraphQlClient {
                 "sortField", "CUSTOM",
                 "sortOrder", "ASCENDING"));
 
-        try {
-            RemoteQuestionList result = graphQlClient.documentName("problemsetQuestionListV2")
-                    .variables(variables)
-                    .retrieveSync("problemsetQuestionListV2")
-                    .toEntity(RemoteQuestionList.class);
-            return result == null || result.questions() == null ? List.of() : result.questions();
-        }
-        catch (RuntimeException ex) {
-            throw new LeetCodeIntegrationException("Unable to search LeetCode problems", ex);
-        }
+        RemoteQuestionList result = call(
+                "Unable to search LeetCode problems",
+                () -> graphQlClient.documentName("problemsetQuestionListV2")
+                        .variables(variables)
+                        .retrieveSync("problemsetQuestionListV2")
+                        .toEntity(RemoteQuestionList.class));
+        return result == null || result.questions() == null ? List.of() : result.questions();
     }
 
     public LeetCodeAuthStatus verifyAuthentication() {
@@ -96,9 +98,11 @@ public class LeetCodeGraphQlClient {
                     "LeetCode remote integration is disabled");
         }
         try {
-            RemoteUserStatus status = graphQlClient.documentName("globalData")
-                    .retrieveSync("userStatus")
-                    .toEntity(RemoteUserStatus.class);
+            RemoteUserStatus status = call(
+                    "Unable to verify the LeetCode session",
+                    () -> graphQlClient.documentName("globalData")
+                            .retrieveSync("userStatus")
+                            .toEntity(RemoteUserStatus.class));
             boolean authenticated = status != null && Boolean.TRUE.equals(status.isSignedIn());
             return new LeetCodeAuthStatus(
                     true,
@@ -116,6 +120,26 @@ public class LeetCodeGraphQlClient {
                     null,
                     null,
                     "Authentication check failed: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Runs a GraphQL call through the circuit breaker.
+     *
+     * <p>A tripped breaker is reported as an ordinary integration failure so that callers keep their
+     * single fallback path: whether LeetCode timed out or the breaker declined to try, the answer is
+     * the same cached data.
+     */
+    private <T> T call(String failureMessage, Supplier<T> operation) {
+        try {
+            return circuitBreaker.executeSupplier(operation);
+        }
+        catch (CallNotPermittedException ex) {
+            throw new LeetCodeIntegrationException(
+                    failureMessage + " (circuit breaker is open after repeated failures)", ex);
+        }
+        catch (RuntimeException ex) {
+            throw new LeetCodeIntegrationException(failureMessage, ex);
         }
     }
 

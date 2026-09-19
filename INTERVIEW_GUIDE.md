@@ -2,19 +2,36 @@
 
 ## 90-second explanation
 
-> I built a Java 17 Spring Boot MCP server that gives LLM agents structured coding-practice tools. Instead of prompting an LLM with unstructured text, the agent can call tools such as `search_problems`, `start_practice`, `get_hint`, `record_attempt`, and `get_progress_stats`.
+> I built a Java 17 Spring Boot MCP server that turns LeetCode practice into a scheduled curriculum
+> rather than a list of problems you grind and forget.
 >
-> Spring AI exposes the annotated Java methods over MCP using Streamable HTTP. Problem metadata comes from LeetCode's GraphQL endpoint through Spring for GraphQL. When LeetCode credentials are configured, the client sends the user's session and CSRF cookies and can verify the authenticated session. SQLite caches problems and persists practice sessions and attempts.
+> The interesting part is the review engine. When you finish a practice session, the server derives a
+> recall grade from what it observed — how many attempts you needed, how many hints you asked for,
+> whether you ran over your time budget — and feeds that into an SM-2 spaced-repetition schedule. So
+> `recommend_next_problem` does not just hand you an unsolved problem; it prefers one you are about to
+> forget, and falls back to a new problem in whichever topic your review history says is weakest.
 >
-> I designed the integration cache-first. If LeetCode is unavailable, the server can still use cached and seeded problems. I also avoided executing arbitrary user code inside the service because that requires a sandboxed judge architecture. The MCP layer is responsible for structured tool access, while services contain the business logic and repositories own persistence.
+> The reason it derives the grade instead of asking for one is that a learner who just read a hint is a
+> poor judge of whether they would have recalled the idea unaided. The session already measured that.
+>
+> Around that, Spring AI exposes thirteen annotated Java methods as MCP tools over Streamable HTTP.
+> Problem metadata comes from LeetCode's unofficial GraphQL endpoint through Spring for GraphQL, behind
+> a circuit breaker, with SQLite as a cache-first fallback so the tools keep working when LeetCode does
+> not. I deliberately did not execute submitted code in-process, because that needs a sandboxed judge.
 
 ## Resume bullet you can defend
 
 **LeetCode Coach MCP Server | Java 17, Spring Boot, Spring AI, SQLite, GraphQL**
 
-- Built a Spring AI MCP server exposing 11 coding-practice tools over Streamable HTTP with optional SSE responses, SQLite-backed session persistence, cache-first LeetCode GraphQL synchronization, and cookie/CSRF authenticated profile verification.
+- Built a Spring AI MCP server exposing 13 coding-practice tools over Streamable HTTP, with an SM-2
+  spaced-repetition engine that grades recall from observed session signals (attempts, hints, elapsed
+  time) to schedule reviews and surface weak topics; hardened the unofficial LeetCode GraphQL
+  integration with a Resilience4j circuit breaker, cache-first SQLite fallback, and WireMock contract
+  tests, plus protocol-level MCP integration tests driving the live `/mcp` endpoint.
 
-Use “Streamable HTTP with optional SSE responses” in conversation. Saying “HTTP/SSE transport” is understandable shorthand, but the current MCP transport is Streamable HTTP; the old two-endpoint SSE transport is deprecated.
+Use "Streamable HTTP with optional SSE responses" in conversation. Saying "HTTP/SSE transport" is
+understandable shorthand, but the current MCP transport is Streamable HTTP; the old two-endpoint SSE
+transport is deprecated.
 
 ## Component map
 
@@ -22,13 +39,15 @@ Use “Streamable HTTP with optional SSE responses” in conversation. Saying �
 |---|---|
 | `LeetCodeCoachTools` | MCP tool contract and parameter descriptions |
 | `LeetCodeProblemResource` | MCP resource at `leetcode://problem/{titleSlug}` |
-| `ProblemCatalogService` | Cache-first retrieval, normalization, fallback, recommendations |
-| `PracticeService` | Session lifecycle, hints, attempts, streak, statistics |
-| `LeetCodeGraphQlClient` | Executes named GraphQL documents and maps remote DTOs |
-| `ProblemRepository` | SQLite problem upsert and search |
-| `PracticeRepository` | SQLite sessions, attempts, and aggregate queries |
+| `ProblemCatalogService` | Cache-first retrieval, normalization, fallback |
+| `PracticeService` | Session lifecycle, hints, attempts, streak, recommendations |
+| `RecallGrader` | Turns observed session signals into a 0-5 recall grade |
+| `SpacedRepetitionScheduler` | Pure SM-2 interval arithmetic |
+| `ReviewService` | Applies grades to schedules; due reviews and topic mastery |
+| `LeetCodeGraphQlClient` | Executes named GraphQL documents behind a circuit breaker |
+| `ProblemRepository` / `PracticeRepository` / `ReviewRepository` | SQLite persistence |
 | `McpAccessFilter` | Optional API key and Origin-host validation |
-| `SeedDataLoader` | Offline demo catalog |
+| `SchemaMigrations` / `SeedDataLoader` | Idempotent column additions; offline demo catalog |
 
 ## End-to-end flow
 
@@ -49,6 +68,60 @@ Use “Streamable HTTP with optional SSE responses” in conversation. Saying �
 4. Hints are returned progressively, not all at once.
 5. Each attempt is appended as an immutable row.
 6. Completion updates the session and later contributes to streak and difficulty statistics.
+
+## The spaced-repetition engine
+
+This is the part worth spending interview time on.
+
+### Why it exists
+
+Solving a problem once does not mean you can solve it in four weeks. The original version of this
+project stored sessions and counted them, which is a database with extra steps. Scheduling turns the
+same stored data into a decision.
+
+### Deriving the grade
+
+SM-2 expects a recall quality from 0 to 5, normally self-reported. Self-reporting is unreliable
+immediately after reading a hint, and a practice session already observed the relevant evidence:
+
+| Signal | Effect on grade |
+|---|---|
+| No attempt recorded | 0 (blank) |
+| No accepted attempt | 1 |
+| Each hint revealed | −1, capped at −2 |
+| Each failed attempt before success | −1, capped at −2 |
+| Over 1.5× the session's time budget | −1 |
+
+An accepted solution is floored at 2, not 5 — a problem that took three hints and four attempts has
+not been learned, and a grade below 3 correctly resets the repetition count.
+
+### Scheduling
+
+Standard SM-2: intervals of 1 day, then 6 days, then `previous interval × easiness factor`. Easiness
+starts at 2.5, moves by `0.1 − (5 − q)(0.08 + (5 − q)0.02)`, and is floored at 1.3. A grade below 3
+is a lapse: repetitions reset to zero and the problem returns tomorrow.
+
+Two deliberate deviations from textbook SM-2:
+
+- **Intervals are capped at 365 days.** Uncapped SM-2 eventually schedules a review further out than
+  anyone plans an interview, which is indistinguishable from dropping the problem.
+- **Due dates land at the start of a UTC day**, not at the hour of the last review. Otherwise a
+  problem reviewed at 21:00 would not come due until 21:00, and anyone practising earlier in the
+  evening would silently miss their own reviews.
+
+### Topic mastery
+
+Per topic tag: average of the most recent grades, discounted by lapse rate
+(`mastery = (avgGrade / 5) × (1 − min(0.5, lapses / 2n))`). Aggregated in Java rather than SQL
+because topic tags live in a JSON column — SQLite would need a `json_each` join over a text field
+that exists as a cache, not as a taxonomy.
+
+### Testability
+
+`SpacedRepetitionScheduler` and `RecallGrader` are pure and stateless, so the interval arithmetic is
+unit-tested without a database or a clock. Everything time-dependent reads an injected `Clock`, which
+lets the MCP integration test advance a day and assert that the review actually becomes due — the
+behaviour is otherwise untestable in a single run.
 
 ## Why MCP instead of REST alone?
 
@@ -176,7 +249,23 @@ MCP request count and latency by tool, GraphQL latency/error rate, cache hit rat
 
 ### “How did you test it?”
 
-Unit tests mock repositories and the catalog to verify session creation, hint progression, and streak calculation. An integration test boots the application with remote GraphQL disabled, initializes an in-memory SQLite database, seeds the catalog, and runs a complete practice workflow. The next layer would add WireMock fixtures for GraphQL contract tests.
+Four layers, each catching what the one below cannot:
+
+1. **Unit** — `SpacedRepetitionSchedulerTest` and `RecallGraderTest` pin the algorithm: interval
+   growth, the easiness floor, lapse handling, the 365-day cap, and every grading rule.
+2. **Service integration** — boots the app with remote GraphQL disabled against in-memory SQLite and
+   runs a full practice workflow.
+3. **Contract** — `LeetCodeGraphQlClientContractTest` runs the real client against WireMock, pinning
+   the upstream response shape and asserting the circuit breaker opens and short-circuits.
+4. **Protocol** — `McpProtocolIntegrationTest` boots the server on a random port and drives `/mcp`
+   over JSON-RPC, asserting all thirteen tools return without a protocol error.
+
+The fourth layer exists because of a real bug. Spring AI validates every tool result against a
+generated output schema that marks all record components required; any null field was rejected on the
+wire even though the service returned normally. Ten of eleven tools failed that way, and neither the
+unit nor the service tests could see it, because both stop below the MCP boundary. The fix was to mark
+optional record components `@Nullable` and serialize with `NON_NULL`; reverting it makes the protocol
+test fail with the exact validation error.
 
 ## Honest project boundaries
 
@@ -193,15 +282,24 @@ A technically accurate boundary is more convincing than a fictional production l
 ## Five-minute demo narration
 
 1. Start the server and show `/api/status` reporting six cached seed problems.
-2. Connect an MCP client to `/mcp` and list tools.
-3. Search for a medium graph problem.
-4. Start `number-of-islands`; save the returned session ID.
-5. Request level-one hint and explain progressive disclosure.
-6. Record an attempt and complete the session.
-7. Fetch progress statistics.
-8. Restart the server and fetch statistics again to prove SQLite persistence.
-9. With credentials configured, call `verify_leetcode_auth` and refresh a live problem.
+2. Connect an MCP client to `/mcp` and list the thirteen tools.
+3. Start `number-of-islands`, ask for two hints, record an accepted attempt.
+4. Complete the session and read the returned `review` block aloud: grade 3, because two hints cost
+   two points, with the rationale string explaining exactly that.
+5. Call `get_topic_mastery` and show the graph topics sitting at 0.6.
+6. Call `recommend_next_problem` and explain the priority order: due review, then weakest topic, then
+   anything unattempted.
+7. Restart the server and fetch progress statistics again to prove SQLite persistence.
+8. With credentials configured, call `verify_leetcode_auth` and refresh a live problem.
+
+If asked to prove the scheduling works over time, point at `McpProtocolIntegrationTest`: it advances
+the injected clock by a day and asserts the review becomes due.
 
 ## Thirty-second closing statement
 
-> The project demonstrates that I can integrate an emerging protocol without putting protocol details into business logic. MCP handles agent interoperability, GraphQL handles structured upstream data, and SQLite provides resilient local state. I also designed around the two main risks: an unstable third-party API and unsafe code execution.
+> The project demonstrates that I can integrate an emerging protocol without letting protocol details
+> leak into business logic, and that I can turn stored data into a decision rather than a report. The
+> review engine is a real algorithm with a deliberate deviation or two that I can justify; MCP handles
+> agent interoperability; the GraphQL client is isolated behind a circuit breaker because it depends on
+> an unofficial API. I also designed around the two main risks: an unstable third-party interface and
+> unsafe code execution.

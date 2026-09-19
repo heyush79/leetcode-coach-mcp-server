@@ -2,20 +2,49 @@
 
 > Unofficial educational project. It is not affiliated with or endorsed by LeetCode.
 
-A Java 17 Spring Boot application that exposes coding-practice capabilities to LLM agents through the Model Context Protocol (MCP). It uses Spring AI's Streamable HTTP server, SQLite persistence, and a LeetCode GraphQL client with optional session-cookie authentication.
+A Java 17 Spring Boot application that turns LeetCode practice into a scheduled curriculum and exposes it to LLM agents through the Model Context Protocol (MCP).
+
+The core is a spaced-repetition engine: finishing a practice session produces a recall grade derived from what the session observed — attempts needed, hints revealed, time taken — which drives an SM-2 review schedule. Recommendations prefer a problem you are about to forget over a problem you have never seen.
+
+Around that sit Spring AI's Streamable HTTP MCP server, SQLite persistence, and a LeetCode GraphQL client behind a circuit breaker, with optional session-cookie authentication.
 
 This repository is intentionally interview-sized: substantial enough to demonstrate protocol integration, persistence, external API handling, and failure design, but not padded with seventeen microservices whose main job is forwarding JSON to one another.
 
 ## What it does
 
-- Exposes eleven MCP tools for problem search, session management, hints, attempt tracking, recommendations, and progress.
+- Schedules reviews with SM-2, grading recall from observed session signals rather than self-reports.
+- Reports per-topic mastery so weak concepts drive the next recommendation.
+- Exposes thirteen MCP tools for search, session management, hints, attempts, reviews, and progress.
 - Exposes a `leetcode://problem/{titleSlug}` MCP resource.
-- Fetches live problem metadata through LeetCode's GraphQL endpoint.
+- Fetches live problem metadata through LeetCode's GraphQL endpoint, behind a Resilience4j circuit breaker.
 - Adds `LEETCODE_SESSION` and CSRF credentials when configured, allowing authenticated status fields and authentication verification.
 - Caches remote data in SQLite and falls back to six seeded problems when LeetCode is unavailable.
-- Persists practice sessions and attempts across server restarts.
+- Persists practice sessions, attempts, and review state across server restarts.
 - Supports optional API-key protection and Origin validation on `/mcp`.
 - Includes REST endpoints only for debugging and demonstrations. The actual agent integration is MCP.
+
+## How review scheduling works
+
+Completing a session grades recall from 0 to 5:
+
+| Signal | Effect |
+|---|---|
+| No attempt recorded | grade 0 |
+| No accepted attempt | grade 1 |
+| Each hint revealed | −1, capped at −2 |
+| Each failed attempt before success | −1, capped at −2 |
+| Over 1.5x the session's time budget | −1 |
+
+An accepted solution never grades below 2. That grade advances the problem's SM-2 state: intervals of
+1 day, then 6, then `interval x easiness`, with easiness starting at 2.5 and floored at 1.3. A grade
+below 3 resets the repetition count and brings the problem back tomorrow.
+
+Two deliberate deviations from textbook SM-2: intervals are capped at 365 days, and due dates land at
+the start of a UTC day so that practising earlier in the evening than the last review still surfaces
+them.
+
+`recommend_next_problem` then applies a priority order: a problem due for review, then an unattempted
+problem in the weakest topic, then any unattempted problem.
 
 ## Architecture
 
@@ -25,10 +54,14 @@ flowchart LR
     B --> C[Annotated MCP Tools]
     C --> D[Problem Catalog Service]
     C --> E[Practice Service]
+    E --> J[Review Service]
+    J --> K[Recall Grader + SM-2 Scheduler]
     D --> F[Spring GraphQL HTTP Client]
-    F --> G[LeetCode GraphQL]
+    F --> L[Circuit Breaker]
+    L --> G[LeetCode GraphQL]
     D --> H[(SQLite)]
     E --> H
+    J --> H
     I[Optional API key + Origin filter] --> B
 ```
 
@@ -49,7 +82,8 @@ flowchart LR
 - Spring for GraphQL `HttpSyncGraphQlClient`
 - Spring JDBC
 - SQLite via Xerial JDBC
-- JUnit 5, AssertJ, and Mockito
+- Resilience4j circuit breaker
+- JUnit 5, AssertJ, Mockito, and WireMock
 
 ## Run locally
 
@@ -144,23 +178,26 @@ The filter also rejects browser requests with an Origin host outside `localhost`
 | `get_session_context` | Load the problem and all previous attempts |
 | `get_hint` | Return progressive hints at levels 1 to 3 |
 | `record_attempt` | Store code, verdict, complexity, and notes |
-| `complete_practice` | Complete a session with retrospective notes |
-| `get_progress_stats` | Return totals, active days, streak, and difficulty split |
-| `recommend_next_problem` | Choose an unattempted matching problem |
+| `complete_practice` | Complete a session, grade recall, and schedule the next review |
+| `get_progress_stats` | Return totals, active days, streak, reviews due, and difficulty split |
+| `get_due_reviews` | List problems whose review is due, most overdue first |
+| `get_topic_mastery` | Report recall performance per topic, weakest first |
+| `recommend_next_problem` | Due review, then weakest topic, then any unattempted problem |
 | `verify_leetcode_auth` | Check the configured LeetCode session |
 | `recent_practice_sessions` | List recent sessions |
 
 ## Suggested demo
 
-For a deterministic interview demo, start with `LEETCODE_REMOTE_ENABLED=false`; enable the remote client only for the separate GraphQL/authentication segment.
+For a deterministic demo, start with `LEETCODE_REMOTE_ENABLED=false`; enable the remote client only for the separate GraphQL/authentication segment.
 
 1. Call `search_problems` with `difficulty=MEDIUM` and `topic=graph`.
 2. Call `start_practice` for `number-of-islands`.
-3. Call `get_hint` at level 1.
+3. Call `get_hint` at level 2.
 4. Call `record_attempt` with a short BFS or DFS implementation and `verdict=ACCEPTED`.
-5. Call `complete_practice` with a note about visited-state handling.
-6. Call `get_progress_stats`.
-7. Restart the application and call `get_progress_stats` again to demonstrate persistence.
+5. Call `complete_practice`. The response carries a `review` block: grade 3, because two hints cost two points, with a rationale saying so.
+6. Call `get_topic_mastery` and see the graph topics at 0.6.
+7. Call `recommend_next_problem` and read the reason it gives.
+8. Restart the application and call `get_progress_stats` again to demonstrate persistence.
 
 ## Database schema
 
@@ -176,6 +213,11 @@ Tracks one coaching session per problem attempt with active/completed state, tim
 
 Stores submitted source code, verdict, optional runtime/memory, complexity claims, and reflection notes.
 
+### `review_schedule`
+
+One row per practised problem holding SM-2 state: easiness factor, current interval, consecutive
+repetitions, lapse count, last grade, and the next due date.
+
 ## Failure handling
 
 - Live search failure: log the upstream error and query SQLite.
@@ -185,6 +227,9 @@ Stores submitted source code, verdict, optional runtime/memory, complexity claim
 - Concurrent SQLite writes: Hikari pool size is one because this is an embedded single-node service.
 - Invalid session mutation: reject attempts after a session is completed.
 - Nullable tool results: records expose optional fields as `@Nullable` and serialize with `NON_NULL`, because Spring AI's generated output schema marks every component required and rejects a null on the wire.
+- Repeated upstream failures: a Resilience4j circuit breaker opens after a configurable failure rate and fails fast, so tools fall back to SQLite immediately instead of waiting out the timeout on every call.
+- Repeated completion: completing an already-completed session returns stored state without re-grading, so it cannot inflate the review schedule.
+- Schema drift: `SchemaMigrations` adds columns that `CREATE TABLE IF NOT EXISTS` would skip on an existing database, preserving practice history.
 
 ## What the server deliberately does not do
 
@@ -223,11 +268,13 @@ The suite has three layers:
 
 - `PracticeServiceTest` covers session creation, progressive hints, and streak calculation with mocked collaborators.
 - `ApplicationIntegrationTest` runs an offline workflow through the service layer against in-memory SQLite.
-- `McpProtocolIntegrationTest` boots the server on a random port and drives the real `/mcp` endpoint over JSON-RPC, asserting that all eleven tools return without a protocol error.
+- `SpacedRepetitionSchedulerTest` and `RecallGraderTest` pin the algorithm: interval growth, easiness floor, lapse handling, the interval cap, and every grading rule.
+- `LeetCodeGraphQlClientContractTest` runs the real GraphQL client against WireMock, pinning the upstream response shape and asserting the circuit breaker opens and short-circuits.
+- `McpProtocolIntegrationTest` boots the server on a random port and drives the real `/mcp` endpoint over JSON-RPC, asserting that all thirteen tools return without a protocol error, and advancing an injected clock to prove a review becomes due.
 
 The third layer exists because the first two cannot see the MCP boundary. Spring AI validates every tool result against a generated output schema, so a tool can succeed in Java and still be rejected on the wire. Only a test that speaks the protocol catches that.
 
-A reasonable next extension is a WireMock-based contract test for LeetCode GraphQL responses.
+Time-dependent behaviour reads an injected `Clock`, so review scheduling is tested by advancing time rather than waiting for it.
 
 ## Main design trade-offs
 
@@ -239,5 +286,8 @@ A reasonable next extension is a WireMock-based contract test for LeetCode Graph
 | Cache-first problem detail | Fast and resilient | Data can become stale until refresh |
 | No in-process code execution | Safe and small scope | Verdict is supplied externally or by the user |
 | Optional API key | Easy local setup with a security path | Not a full OAuth 2.0 MCP authorization implementation |
+| Derived recall grade | Honest signal; no self-rating bias after a hint | Heuristic weights, not calibrated against outcome data |
+| SM-2 rather than FSRS | Small, explainable, no training data needed | Less accurate than modern schedulers |
+| Circuit breaker on GraphQL | Fast degradation during an outage | One more state to reason about when debugging |
 
 See `INTERVIEW_GUIDE.md` for the explanation you should give rather than improvising architecture mythology under fluorescent lighting. See `VALIDATION.md` for build and smoke-test commands.

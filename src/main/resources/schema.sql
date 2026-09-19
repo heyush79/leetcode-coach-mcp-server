@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS practice_sessions (
     completed_at TEXT,
     target_minutes INTEGER,
     notes TEXT,
+    max_hint_level INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(title_slug) REFERENCES problems(title_slug)
 );
 
@@ -52,3 +53,18 @@ CREATE TABLE IF NOT EXISTS attempts (
 
 CREATE INDEX IF NOT EXISTS idx_attempts_session_id ON attempts(session_id);
 CREATE INDEX IF NOT EXISTS idx_attempts_created_at ON attempts(created_at);
+
+-- SM-2 review state, one row per problem that has been practised at least once.
+CREATE TABLE IF NOT EXISTS review_schedule (
+    title_slug TEXT PRIMARY KEY,
+    easiness_factor REAL NOT NULL DEFAULT 2.5,
+    interval_days INTEGER NOT NULL DEFAULT 0,
+    repetitions INTEGER NOT NULL DEFAULT 0,
+    lapses INTEGER NOT NULL DEFAULT 0,
+    last_grade INTEGER NOT NULL DEFAULT 0,
+    last_reviewed_at TEXT,
+    due_at TEXT NOT NULL,
+    FOREIGN KEY(title_slug) REFERENCES problems(title_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_schedule_due_at ON review_schedule(due_at);

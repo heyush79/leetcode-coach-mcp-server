@@ -40,9 +40,11 @@ class ApplicationIntegrationTest {
                 "O(n*m)",
                 "O(n*m)",
                 "Mark nodes visited when enqueuing them");
-        PracticeSession completed = practiceService.completePractice(session.id(), "Review BFS visited timing");
+        var completion = practiceService.completePractice(session.id(), "Review BFS visited timing");
 
-        assertThat(completed.status()).isEqualTo("COMPLETED");
+        assertThat(completion.session().status()).isEqualTo("COMPLETED");
+        assertThat(completion.review()).isNotNull();
+        assertThat(completion.review().nextReviewInDays()).isGreaterThanOrEqualTo(1);
         assertThat(practiceService.getSessionContext(session.id()).attempts()).hasSize(1);
         assertThat(practiceService.getProgressStats().completedSessions()).isGreaterThanOrEqualTo(1);
         assertThat(practiceService.getProgressStats().acceptedAttempts()).isGreaterThanOrEqualTo(1);
