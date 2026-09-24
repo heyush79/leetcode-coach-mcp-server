@@ -2,19 +2,42 @@
 
 ## 90-second explanation
 
-> I built a Java 17 Spring Boot MCP server that gives LLM agents structured coding-practice tools. Instead of prompting an LLM with unstructured text, the agent can call tools such as `search_problems`, `start_practice`, `get_hint`, `record_attempt`, and `get_progress_stats`.
+> People solve hundreds of LeetCode problems and forget most of them. LeetCode's green checkmark
+> records that you solved something once, not whether you could solve it today, so preparation becomes
+> re-grinding a random queue while the topics you quietly lost go unnoticed.
 >
-> Spring AI exposes the annotated Java methods over MCP using Streamable HTTP. Problem metadata comes from LeetCode's GraphQL endpoint through Spring for GraphQL. When LeetCode credentials are configured, the client sends the user's session and CSRF cookies and can verify the authenticated session. SQLite caches problems and persists practice sessions and attempts.
+> I built a Java 17 Spring Boot server that fixes that for anyone practising with an AI assistant.
+> It syncs your submissions from leetcode.com and groups them into sittings. When a sitting ends — or
+> you finish a session the assistant coached you through — it derives a recall grade from what it
+> observed: how many attempts you needed, how many hints you asked for, whether you ran over your time
+> budget. That feeds an SM-2 spaced-repetition schedule. So "what should I practise next" is answered
+> with a problem you are about to forget, or one in whichever topic your review history says is
+> weakest, rather than the next unsolved item in a list.
 >
-> I designed the integration cache-first. If LeetCode is unavailable, the server can still use cached and seeded problems. I also avoided executing arbitrary user code inside the service because that requires a sandboxed judge architecture. The MCP layer is responsible for structured tool access, while services contain the business logic and repositories own persistence.
+> It derives the grade instead of asking for one because a learner who just read a hint is a poor judge
+> of whether they would have recalled the idea unaided. The session already measured that.
+>
+> I exposed it over MCP rather than building a web app, because the interface should be the assistant
+> you already have open. Spring AI turns thirteen annotated Java methods into MCP tools over Streamable
+> HTTP. Problem metadata comes from LeetCode's unofficial GraphQL endpoint behind a circuit breaker,
+> with SQLite as a cache-first fallback so the tools keep working when LeetCode does not. I deliberately
+> did not execute submitted code in-process, because that needs a sandboxed judge.
 
 ## Resume bullet you can defend
 
 **LeetCode Coach MCP Server | Java 17, Spring Boot, Spring AI, SQLite, GraphQL**
 
-- Built a Spring AI MCP server exposing 11 coding-practice tools over Streamable HTTP with optional SSE responses, SQLite-backed session persistence, cache-first LeetCode GraphQL synchronization, and cookie/CSRF authenticated profile verification.
+- Built a Spring AI MCP server exposing 15 coding-practice tools over Streamable HTTP, with an SM-2
+  spaced-repetition engine fed by an idempotent sync of the user's own submissions from LeetCode's
+  authenticated GraphQL: sittings inferred from submission timing, recall graded from observed
+  signals (attempts, hints, elapsed time), and schedules rebuilt by replaying history so
+  out-of-order imports stay correct; hardened the unofficial integration with a Resilience4j circuit
+  breaker, cache-first SQLite fallback, and WireMock contract tests, plus protocol-level MCP
+  integration tests driving the live `/mcp` endpoint.
 
-Use “Streamable HTTP with optional SSE responses” in conversation. Saying “HTTP/SSE transport” is understandable shorthand, but the current MCP transport is Streamable HTTP; the old two-endpoint SSE transport is deprecated.
+Use "Streamable HTTP with optional SSE responses" in conversation. Saying "HTTP/SSE transport" is
+understandable shorthand, but the current MCP transport is Streamable HTTP; the old two-endpoint SSE
+transport is deprecated.
 
 ## Component map
 
@@ -22,13 +45,19 @@ Use “Streamable HTTP with optional SSE responses” in conversation. Saying �
 |---|---|
 | `LeetCodeCoachTools` | MCP tool contract and parameter descriptions |
 | `LeetCodeProblemResource` | MCP resource at `leetcode://problem/{titleSlug}` |
-| `ProblemCatalogService` | Cache-first retrieval, normalization, fallback, recommendations |
-| `PracticeService` | Session lifecycle, hints, attempts, streak, statistics |
-| `LeetCodeGraphQlClient` | Executes named GraphQL documents and maps remote DTOs |
-| `ProblemRepository` | SQLite problem upsert and search |
-| `PracticeRepository` | SQLite sessions, attempts, and aggregate queries |
+| `ProblemCatalogService` | Cache-first retrieval, normalization, fallback |
+| `PracticeService` | Session lifecycle, hints, attempts, streak, recommendations |
+| `RecallGrader` | Turns observed session signals into a 0-5 recall grade |
+| `SpacedRepetitionScheduler` | Pure SM-2 interval arithmetic |
+| `ReviewService` | Applies grades to schedules; due reviews and topic mastery |
+| `SubmissionSyncService` | Pages leetcode.com's submission list, imports what is new, rebuilds affected schedules |
+| `SubmissionImporter` | Infers the sitting a submission belongs to and stores it, one transaction each |
+| `SubmissionParser` | Interprets LeetCode's display strings: verdicts, timestamps, runtime, memory |
+| `SubmissionSyncScheduler` | Runs the sync in the background once credentials are configured |
+| `LeetCodeGraphQlClient` | Executes named GraphQL documents behind a circuit breaker |
+| `ProblemRepository` / `PracticeRepository` / `ReviewRepository` | SQLite persistence |
 | `McpAccessFilter` | Optional API key and Origin-host validation |
-| `SeedDataLoader` | Offline demo catalog |
+| `SchemaMigrations` / `SeedDataLoader` | Idempotent column additions; offline demo catalog |
 
 ## End-to-end flow
 
@@ -49,6 +78,125 @@ Use “Streamable HTTP with optional SSE responses” in conversation. Saying �
 4. Hints are returned progressively, not all at once.
 5. Each attempt is appended as an immutable row.
 6. Completion updates the session and later contributes to streak and difficulty statistics.
+
+## The spaced-repetition engine
+
+This is the part worth spending interview time on.
+
+### Why it exists
+
+Solving a problem once does not mean you can solve it in four weeks. The original version of this
+project stored sessions and counted them, which is a database with extra steps. Scheduling turns the
+same stored data into a decision.
+
+### Deriving the grade
+
+SM-2 expects a recall quality from 0 to 5, normally self-reported. Self-reporting is unreliable
+immediately after reading a hint, and a practice session already observed the relevant evidence:
+
+| Signal | Effect on grade |
+|---|---|
+| No attempt recorded | 0 (blank) |
+| No accepted attempt | 1 |
+| Each hint revealed | −1, capped at −2 |
+| Each failed attempt before success | −1, capped at −2 |
+| Over 1.5× the session's time budget | −1 |
+
+An accepted solution is floored at 2, not 5 — a problem that took three hints and four attempts has
+not been learned, and a grade below 3 correctly resets the repetition count.
+
+### Scheduling
+
+Standard SM-2: intervals of 1 day, then 6 days, then `previous interval × easiness factor`. Easiness
+starts at 2.5, moves by `0.1 − (5 − q)(0.08 + (5 − q)0.02)`, and is floored at 1.3. A grade below 3
+is a lapse: repetitions reset to zero and the problem returns tomorrow.
+
+Two deliberate deviations from textbook SM-2:
+
+- **Intervals are capped at 365 days.** Uncapped SM-2 eventually schedules a review further out than
+  anyone plans an interview, which is indistinguishable from dropping the problem.
+- **Due dates land at the start of a UTC day**, not at the hour of the last review. Otherwise a
+  problem reviewed at 21:00 would not come due until 21:00, and anyone practising earlier in the
+  evening would silently miss their own reviews.
+
+### Topic mastery
+
+Per topic tag: average of the most recent grades, discounted by lapse rate
+(`mastery = (avgGrade / 5) × (1 − min(0.5, lapses / 2n))`). Aggregated in Java rather than SQL
+because topic tags live in a JSON column — SQLite would need a `json_each` join over a text field
+that exists as a cache, not as a taxonomy.
+
+### Testability
+
+`SpacedRepetitionScheduler` and `RecallGrader` are pure and stateless, so the interval arithmetic is
+unit-tested without a database or a clock. Everything time-dependent reads an injected `Clock`, which
+lets the MCP integration test advance a day and assert that the review actually becomes due — the
+behaviour is otherwise untestable in a single run.
+
+## The submission sync
+
+The original version stored what you told it. That made it a diary, and a coach who only knows what
+you write in your diary is a weak coach. The sync is what turns it into one that watches.
+
+### Where the data comes from
+
+LeetCode's authenticated GraphQL has `submissionList`: every submission by the signed-in user,
+newest first, with verdict, language, runtime, memory, and an epoch-seconds timestamp. It needs the
+session cookie; an anonymous caller gets nulls rather than an error, which the client treats as a
+failure with a message naming the cookie, so an expired session does not masquerade as "no
+submissions".
+
+Only the authenticated endpoint is used. The public `recentAcSubmissionList` lists accepted
+submissions alone, which would make every sitting look like a first-try success and bias every grade
+to 5.
+
+### Inferring sittings
+
+LeetCode has no session concept, only a stream. Each submission goes, in order of preference, to:
+
+1. an assistant-coached session for the same problem that was open at the time or had ended within
+   thirty minutes — the real verdict belongs next to the hints the user asked for;
+2. a previously synced sitting on the same problem within two hours — the same sitting, continued;
+3. otherwise a new sitting.
+
+The gap is a heuristic and I say so. A long think between two submissions splits a sitting; that
+costs a slightly harsher grade on the second half, not a wrong schedule.
+
+### Why the schedule is rebuilt, not updated
+
+SM-2 is a fold over graded recalls in time order. Stepping the stored state forward with each new
+event is only correct when events arrive in order, and the first sync brings in months of history
+older than anything recorded. So a problem's schedule is a cache: whenever its history changes, it
+is recomputed by replaying every graded sitting from the start. That makes the schedule a pure
+function of the history — the order the server learned it in cannot matter — and it means a
+scheduling bug is fixed by replaying, not by patching rows.
+
+### Idempotency and failure
+
+LeetCode's submission id is unique in `attempts`, so syncing twice cannot double-count. Runs are
+incremental: paging stops at the first page containing a known submission, within a page cap. A
+`full` run reads to the end of the listing regardless, skipping known ids, to backfill. (The first
+version capped full runs too, so once the cap was full a backfill re-read the same pages and found
+nothing; running against a real account is what showed it.) Each submission imports in its own transaction, so
+an outage part-way leaves the earlier ones stored and the next run resumes. A problem whose detail
+cannot be fetched is kept as a stub so the submission is never lost. One sync runs at a time.
+
+### A measured surprise
+
+Against a real account the first manual sync timed out at eight seconds, while `curl` got the same
+response in 1.5. LeetCode answers `submissionList` in about a second once its cache is warm, but
+cold it takes eight seconds or more; the background run thirteen seconds later, served from the
+cache the failed request had warmed, imported 500 submissions. The sync now has its own client with
+a thirty-second read timeout; tool calls keep the short one so a slow LeetCode never makes a problem
+search hang. Worth telling because the first hypotheses (HTTP/2, the User-Agent, a Cloudflare rule)
+were all wrong, and only isolating experiments settled it.
+
+### What LeetCode does not expose
+
+Hint views and source code are not in the list endpoint, and nothing says when the user started
+reading the problem. Synced-only sittings therefore grade on attempts alone and start at their first
+submission. Hints and time budgets count only in coached sessions, where the server observed them
+directly. Saying this plainly is better than pretending the sync sees more than it does.
 
 ## Why MCP instead of REST alone?
 
@@ -166,6 +314,31 @@ The schema is small and the SQL is useful to discuss explicitly. Spring JDBC avo
 
 Move SQLite to PostgreSQL, add user IDs and authorization, run stateless MCP instances behind a load balancer, externalize rate limiting and caching, and separate code judging into queued isolated workers. The current service is deliberately optimized for a local single-user use case.
 
+### “How do you avoid double-counting a submission?”
+
+LeetCode's submission id is stored on the attempt with a unique index. The importer checks it before
+writing, and the paging loop stops at the first page containing a known id. Both a re-run and an
+overlapping page are harmless.
+
+### “Why rebuild the schedule instead of updating it?”
+
+Because history arrives out of order. A sync can deliver a sitting from March after a session from
+today, and SM-2 stepped forward from today's state would treat March as the newest event. Replaying
+from the start makes the result independent of arrival order. It also means the stored schedule is
+disposable: a change to the grading rules is applied by replaying, not by migrating rows.
+
+### “What happens when the cookie expires?”
+
+LeetCode returns nulls, not an error. The client treats a null submission list as a failure with a
+message naming the cookie; the run is recorded as failed; `get_sync_status` surfaces it; the
+background job keeps trying on schedule so pasting fresh values is the whole fix. Public problem
+lookups and everything already stored keep working throughout.
+
+### “Why poll rather than push?”
+
+LeetCode has no webhooks. Fifteen minutes is a compromise between freshness and not hammering an
+unofficial endpoint; the on-demand tool covers the moment the user has just finished solving.
+
 ### “How would you stop GraphQL rate-limit issues?”
 
 Cache problem detail, apply timeouts, limit search result size, add retry only for transient failures with jitter, and introduce a local sync schedule rather than querying on every tool call. I would not retry authentication failures.
@@ -176,12 +349,33 @@ MCP request count and latency by tool, GraphQL latency/error rate, cache hit rat
 
 ### “How did you test it?”
 
-Unit tests mock repositories and the catalog to verify session creation, hint progression, and streak calculation. An integration test boots the application with remote GraphQL disabled, initializes an in-memory SQLite database, seeds the catalog, and runs a complete practice workflow. The next layer would add WireMock fixtures for GraphQL contract tests.
+Five layers, each catching what the one below cannot:
+
+1. **Unit** — `SpacedRepetitionSchedulerTest` and `RecallGraderTest` pin the algorithm: interval
+   growth, the easiness floor, lapse handling, the 365-day cap, and every grading rule.
+2. **Service integration** — boots the app with remote GraphQL disabled against in-memory SQLite and
+   runs a full practice workflow.
+3. **Contract** — `LeetCodeGraphQlClientContractTest` runs the real client against WireMock, pinning
+   the upstream response shape and asserting the circuit breaker opens and short-circuits.
+4. **Sync** — `SubmissionSyncContractTest` drives the whole import against a stubbed leetcode.com:
+   paging, sitting inference, grading, schedule rebuild, idempotent re-sync, attaching a submission
+   to a coached session, the stub fallback, and the expired-cookie failure.
+5. **Protocol** — `McpProtocolIntegrationTest` boots the server on a random port and drives `/mcp`
+   over JSON-RPC, asserting all fifteen tools return spec-compliant results.
+
+The protocol layer exists because of a real bug. Spring AI validates every tool result against a
+generated output schema that marks all record components required; any null field was rejected on the
+wire even though the service returned normally. Ten of eleven tools failed that way, and neither the
+unit nor the service tests could see it, because both stop below the MCP boundary. The fix was to mark
+optional record components `@Nullable` and serialize with `NON_NULL`; reverting it makes the protocol
+test fail with the exact validation error.
 
 ## Honest project boundaries
 
 Do not claim these features:
 
+- reading hint usage, source code, or time-to-first-submission from LeetCode (the sync sees
+  verdicts and timestamps, nothing more);
 - execution of arbitrary code;
 - automatic LeetCode submission;
 - official LeetCode API support;
@@ -193,15 +387,26 @@ A technically accurate boundary is more convincing than a fictional production l
 ## Five-minute demo narration
 
 1. Start the server and show `/api/status` reporting six cached seed problems.
-2. Connect an MCP client to `/mcp` and list tools.
-3. Search for a medium graph problem.
-4. Start `number-of-islands`; save the returned session ID.
-5. Request level-one hint and explain progressive disclosure.
-6. Record an attempt and complete the session.
-7. Fetch progress statistics.
-8. Restart the server and fetch statistics again to prove SQLite persistence.
-9. With credentials configured, call `verify_leetcode_auth` and refresh a live problem.
+2. Connect an MCP client to `/mcp` and list the thirteen tools.
+3. Start `number-of-islands`, ask for two hints, record an accepted attempt.
+4. Complete the session and read the returned `review` block aloud: grade 3, because two hints cost
+   two points, with the rationale string explaining exactly that.
+5. Call `get_topic_mastery` and show the graph topics sitting at 0.6.
+6. Call `recommend_next_problem` and explain the priority order: due review, then weakest topic, then
+   anything unattempted.
+7. Restart the server and fetch progress statistics again to prove SQLite persistence.
+8. With credentials configured, call `verify_leetcode_auth`, then `sync_leetcode_submissions` and
+   watch real sittings from leetcode.com appear in `recent_practice_sessions` with
+   `source: LEETCODE`, and the review schedule change without anyone reporting anything.
+
+If asked to prove the scheduling works over time, point at `McpProtocolIntegrationTest`: it advances
+the injected clock by a day and asserts the review becomes due.
 
 ## Thirty-second closing statement
 
-> The project demonstrates that I can integrate an emerging protocol without putting protocol details into business logic. MCP handles agent interoperability, GraphQL handles structured upstream data, and SQLite provides resilient local state. I also designed around the two main risks: an unstable third-party API and unsafe code execution.
+> The project demonstrates that I can integrate an emerging protocol without letting protocol details
+> leak into business logic, and that I can turn stored data into a decision rather than a report. The
+> review engine is a real algorithm with a deliberate deviation or two that I can justify; MCP handles
+> agent interoperability; the GraphQL client is isolated behind a circuit breaker because it depends on
+> an unofficial API. I also designed around the two main risks: an unstable third-party interface and
+> unsafe code execution.

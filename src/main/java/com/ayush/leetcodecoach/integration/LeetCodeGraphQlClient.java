@@ -2,10 +2,15 @@ package com.ayush.leetcodecoach.integration;
 
 import com.ayush.leetcodecoach.config.LeetCodeProperties;
 import com.ayush.leetcodecoach.domain.LeetCodeAuthStatus;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.graphql.client.HttpSyncGraphQlClient;
 import org.springframework.stereotype.Component;
 
@@ -13,25 +18,30 @@ import org.springframework.stereotype.Component;
 public class LeetCodeGraphQlClient {
 
     private final HttpSyncGraphQlClient graphQlClient;
+    private final HttpSyncGraphQlClient syncGraphQlClient;
     private final LeetCodeProperties properties;
+    private final CircuitBreaker circuitBreaker;
 
-    public LeetCodeGraphQlClient(HttpSyncGraphQlClient graphQlClient, LeetCodeProperties properties) {
+    public LeetCodeGraphQlClient(
+            HttpSyncGraphQlClient graphQlClient,
+            @Qualifier("submissionSyncGraphQlClient") HttpSyncGraphQlClient syncGraphQlClient,
+            LeetCodeProperties properties,
+            CircuitBreaker leetCodeCircuitBreaker) {
         this.graphQlClient = graphQlClient;
+        this.syncGraphQlClient = syncGraphQlClient;
         this.properties = properties;
+        this.circuitBreaker = leetCodeCircuitBreaker;
     }
 
     public Optional<RemoteProblem> fetchProblem(String titleSlug) {
         ensureRemoteEnabled();
-        try {
-            RemoteProblem problem = graphQlClient.documentName("questionData")
-                    .variable("titleSlug", titleSlug)
-                    .retrieveSync("question")
-                    .toEntity(RemoteProblem.class);
-            return Optional.ofNullable(problem);
-        }
-        catch (RuntimeException ex) {
-            throw new LeetCodeIntegrationException("Unable to fetch problem '" + titleSlug + "' from LeetCode", ex);
-        }
+        RemoteProblem problem = call(
+                "Unable to fetch problem '" + titleSlug + "' from LeetCode",
+                () -> graphQlClient.documentName("questionData")
+                        .variable("titleSlug", titleSlug)
+                        .retrieveSync("question")
+                        .toEntity(RemoteProblem.class));
+        return Optional.ofNullable(problem);
     }
 
     public List<RemoteProblemSummary> searchProblems(
@@ -64,16 +74,58 @@ public class LeetCodeGraphQlClient {
                 "sortField", "CUSTOM",
                 "sortOrder", "ASCENDING"));
 
-        try {
-            RemoteQuestionList result = graphQlClient.documentName("problemsetQuestionListV2")
-                    .variables(variables)
-                    .retrieveSync("problemsetQuestionListV2")
-                    .toEntity(RemoteQuestionList.class);
-            return result == null || result.questions() == null ? List.of() : result.questions();
+        RemoteQuestionList result = call(
+                "Unable to search LeetCode problems",
+                () -> graphQlClient.documentName("problemsetQuestionListV2")
+                        .variables(variables)
+                        .retrieveSync("problemsetQuestionListV2")
+                        .toEntity(RemoteQuestionList.class));
+        return result == null || result.questions() == null ? List.of() : result.questions();
+    }
+
+    /**
+     * One page of the authenticated user's submissions, newest first.
+     *
+     * <p>Requires the session cookie: LeetCode returns nulls rather than an error for an anonymous
+     * caller, so the precondition is checked here to fail with a useful message instead of an empty
+     * page that looks like "no submissions".
+     *
+     * @param lastKey the continuation token from the previous page, or null for the first page
+     */
+    public RemoteSubmissionPage fetchSubmissions(int offset, int limit, @Nullable String lastKey) {
+        ensureRemoteEnabled();
+        if (!properties.credentialsConfigured()) {
+            throw new LeetCodeIntegrationException(
+                    "LEETCODE_SESSION and LEETCODE_CSRF_TOKEN are required to read your submissions");
         }
-        catch (RuntimeException ex) {
-            throw new LeetCodeIntegrationException("Unable to search LeetCode problems", ex);
+
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("offset", Math.max(0, offset));
+        variables.put("limit", Math.max(1, Math.min(limit, 50)));
+        variables.put("lastKey", lastKey);
+
+        RemoteSubmissionPage page = call(
+                "Unable to read submissions from LeetCode",
+                () -> syncGraphQlClient.documentName("submissionList")
+                        .variables(variables)
+                        .retrieveSync("submissionList")
+                        .toEntity(RemoteSubmissionPage.class));
+
+        if (page == null || page.submissions() == null) {
+            // The shape LeetCode returns for a caller it does not recognise.
+            throw new LeetCodeIntegrationException(
+                    "LeetCode returned no submission list; the session cookie is expired or not a real cookie"
+                            + properties.credentialShapeProblem().map(hint -> ". " + hint).orElse(""));
         }
+        return page;
+    }
+
+    /** Names the likely mistake when LeetCode rejects the configured cookies. */
+    private String rejectedMessage() {
+        return "Credentials were supplied but LeetCode did not accept them"
+                + properties.credentialShapeProblem()
+                        .map(hint -> ". " + hint)
+                        .orElse(". The session may have expired; copy fresh cookie values from the browser");
     }
 
     public LeetCodeAuthStatus verifyAuthentication() {
@@ -96,9 +148,11 @@ public class LeetCodeGraphQlClient {
                     "LeetCode remote integration is disabled");
         }
         try {
-            RemoteUserStatus status = graphQlClient.documentName("globalData")
-                    .retrieveSync("userStatus")
-                    .toEntity(RemoteUserStatus.class);
+            RemoteUserStatus status = call(
+                    "Unable to verify the LeetCode session",
+                    () -> graphQlClient.documentName("globalData")
+                            .retrieveSync("userStatus")
+                            .toEntity(RemoteUserStatus.class));
             boolean authenticated = status != null && Boolean.TRUE.equals(status.isSignedIn());
             return new LeetCodeAuthStatus(
                     true,
@@ -106,7 +160,7 @@ public class LeetCodeGraphQlClient {
                     status == null ? null : status.username(),
                     status == null ? null : status.realName(),
                     status == null ? null : status.avatar(),
-                    authenticated ? "Authenticated LeetCode session" : "Credentials were supplied but LeetCode did not accept them");
+                    authenticated ? "Authenticated LeetCode session" : rejectedMessage());
         }
         catch (RuntimeException ex) {
             return new LeetCodeAuthStatus(
@@ -117,6 +171,41 @@ public class LeetCodeGraphQlClient {
                     null,
                     "Authentication check failed: " + ex.getMessage());
         }
+    }
+
+    /**
+     * Runs a GraphQL call through the circuit breaker.
+     *
+     * <p>A tripped breaker is reported as an ordinary integration failure so that callers keep their
+     * single fallback path: whether LeetCode timed out or the breaker declined to try, the answer is
+     * the same cached data.
+     */
+    private <T> T call(String failureMessage, Supplier<T> operation) {
+        try {
+            return circuitBreaker.executeSupplier(operation);
+        }
+        catch (CallNotPermittedException ex) {
+            throw new LeetCodeIntegrationException(
+                    failureMessage + " (circuit breaker is open after repeated failures)", ex);
+        }
+        catch (RuntimeException ex) {
+            throw new LeetCodeIntegrationException(failureMessage + ": " + rootCause(ex), ex);
+        }
+    }
+
+    /**
+     * The innermost failure, in one line, so a timeout, a 403, and a GraphQL schema error each read
+     * differently to whoever sees the message. Exceptions from the HTTP client never carry request
+     * headers, so nothing here can leak the session cookie.
+     */
+    static String rootCause(Throwable ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage() == null ? "" : cause.getMessage().replaceAll("\\s+", " ").trim();
+        String summary = cause.getClass().getSimpleName() + (message.isEmpty() ? "" : " - " + message);
+        return summary.length() > 200 ? summary.substring(0, 197) + "..." : summary;
     }
 
     private void ensureRemoteEnabled() {

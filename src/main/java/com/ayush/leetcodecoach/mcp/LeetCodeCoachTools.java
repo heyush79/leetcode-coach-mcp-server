@@ -1,17 +1,24 @@
 package com.ayush.leetcodecoach.mcp;
 
 import com.ayush.leetcodecoach.domain.Attempt;
+import com.ayush.leetcodecoach.domain.CompletionSummary;
+import com.ayush.leetcodecoach.domain.DueReviewList;
 import com.ayush.leetcodecoach.domain.HintResponse;
 import com.ayush.leetcodecoach.domain.LeetCodeAuthStatus;
 import com.ayush.leetcodecoach.domain.PracticeSession;
+import com.ayush.leetcodecoach.domain.PracticeSessionList;
 import com.ayush.leetcodecoach.domain.Problem;
+import com.ayush.leetcodecoach.domain.ProblemSearchResult;
 import com.ayush.leetcodecoach.domain.ProgressStats;
 import com.ayush.leetcodecoach.domain.Recommendation;
 import com.ayush.leetcodecoach.domain.SessionContext;
+import com.ayush.leetcodecoach.domain.SyncReport;
+import com.ayush.leetcodecoach.domain.SyncStatus;
+import com.ayush.leetcodecoach.domain.TopicMasteryReport;
 import com.ayush.leetcodecoach.integration.LeetCodeGraphQlClient;
 import com.ayush.leetcodecoach.service.PracticeService;
 import com.ayush.leetcodecoach.service.ProblemCatalogService;
-import java.util.List;
+import com.ayush.leetcodecoach.sync.SubmissionSyncService;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.stereotype.Component;
@@ -22,26 +29,30 @@ public class LeetCodeCoachTools {
     private final ProblemCatalogService catalogService;
     private final PracticeService practiceService;
     private final LeetCodeGraphQlClient leetCodeClient;
+    private final SubmissionSyncService syncService;
 
     public LeetCodeCoachTools(
             ProblemCatalogService catalogService,
             PracticeService practiceService,
-            LeetCodeGraphQlClient leetCodeClient) {
+            LeetCodeGraphQlClient leetCodeClient,
+            SubmissionSyncService syncService) {
         this.catalogService = catalogService;
         this.practiceService = practiceService;
         this.leetCodeClient = leetCodeClient;
+        this.syncService = syncService;
     }
 
     @McpTool(
             name = "search_problems",
             description = "Search LeetCode problems by keyword, difficulty, or topic. Uses live GraphQL and falls back to SQLite.",
             generateOutputSchema = true)
-    public List<Problem> searchProblems(
+    public ProblemSearchResult searchProblems(
             @McpToolParam(description = "Optional title keyword", required = false) String keyword,
             @McpToolParam(description = "Optional EASY, MEDIUM, or HARD", required = false) String difficulty,
             @McpToolParam(description = "Optional topic slug such as array, graph, or dynamic-programming", required = false) String topic,
             @McpToolParam(description = "Maximum number of results, from 1 to 50", required = false) Integer limit) {
-        return catalogService.searchProblems(keyword, difficulty, topic, limit == null ? 10 : limit);
+        return ProblemSearchResult.of(
+                catalogService.searchProblems(keyword, difficulty, topic, limit == null ? 10 : limit));
     }
 
     @McpTool(
@@ -104,9 +115,10 @@ public class LeetCodeCoachTools {
 
     @McpTool(
             name = "complete_practice",
-            description = "Mark a practice session complete and store retrospective notes.",
+            description = "Mark a practice session complete, store retrospective notes, and schedule the next "
+                    + "spaced-repetition review. Recall is graded from attempts, hints used, and time taken.",
             generateOutputSchema = true)
-    public PracticeSession completePractice(
+    public CompletionSummary completePractice(
             @McpToolParam(description = "Practice session UUID", required = true) String sessionId,
             @McpToolParam(description = "What was learned and what to revise", required = false) String notes) {
         return practiceService.completePractice(sessionId, notes);
@@ -114,7 +126,8 @@ public class LeetCodeCoachTools {
 
     @McpTool(
             name = "get_progress_stats",
-            description = "Get persisted practice totals, accepted attempts, active days, streak, and difficulty split.",
+            description = "Get persisted practice totals, accepted attempts, active days, streak, reviews due now, "
+                    + "and difficulty split.",
             generateOutputSchema = true)
     public ProgressStats getProgressStats() {
         return practiceService.getProgressStats();
@@ -122,7 +135,8 @@ public class LeetCodeCoachTools {
 
     @McpTool(
             name = "recommend_next_problem",
-            description = "Recommend an unattempted problem, optionally constrained by difficulty and topic.",
+            description = "Recommend what to practise next: a problem due for review first, then a new problem "
+                    + "in the weakest topic, then any unattempted problem. Optionally constrained by difficulty and topic.",
             generateOutputSchema = true)
     public Recommendation recommendNextProblem(
             @McpToolParam(description = "Optional EASY, MEDIUM, or HARD", required = false) String difficulty,
@@ -142,8 +156,50 @@ public class LeetCodeCoachTools {
             name = "recent_practice_sessions",
             description = "List recently started practice sessions.",
             generateOutputSchema = true)
-    public List<PracticeSession> recentPracticeSessions(
+    public PracticeSessionList recentPracticeSessions(
             @McpToolParam(description = "Maximum number of sessions", required = false) Integer limit) {
-        return practiceService.recentSessions(limit);
+        return PracticeSessionList.of(practiceService.recentSessions(limit));
+    }
+
+    @McpTool(
+            name = "get_due_reviews",
+            description = "List problems whose spaced-repetition review is due now, most overdue first. "
+                    + "Use this to decide what the user should re-solve before attempting anything new.",
+            generateOutputSchema = true)
+    public DueReviewList getDueReviews(
+            @McpToolParam(description = "Maximum number of reviews, from 1 to 50", required = false) Integer limit) {
+        return DueReviewList.of(practiceService.dueReviews(limit));
+    }
+
+    @McpTool(
+            name = "get_topic_mastery",
+            description = "Report recall performance per topic, weakest first, based on review history. "
+                    + "Use this to explain which concepts the user keeps forgetting.",
+            generateOutputSchema = true)
+    public TopicMasteryReport getTopicMastery() {
+        return TopicMasteryReport.of(practiceService.topicMastery());
+    }
+
+    @McpTool(
+            name = "sync_leetcode_submissions",
+            description = "Pull the user's own recent submissions from leetcode.com into their practice history, "
+                    + "grade each sitting, and rebuild the review schedule of every problem touched. Requires "
+                    + "LEETCODE_SESSION and LEETCODE_CSRF_TOKEN. Runs in the background on a schedule; call this "
+                    + "when the user has just been solving on leetcode.com and wants the coach caught up now.",
+            generateOutputSchema = true)
+    public SyncReport syncLeetCodeSubmissions(
+            @McpToolParam(description = "Read to the end of the submission history instead of stopping at "
+                    + "the first already-known submission. Use once to backfill everything older than the "
+                    + "regular sync's page cap.", required = false) Boolean full) {
+        return syncService.sync(Boolean.TRUE.equals(full));
+    }
+
+    @McpTool(
+            name = "get_sync_status",
+            description = "Report whether submissions can be synced from leetcode.com, when they last were, and "
+                    + "how many have been imported. Use this to explain why history looks empty.",
+            generateOutputSchema = true)
+    public SyncStatus getSyncStatus() {
+        return syncService.status();
     }
 }

@@ -88,6 +88,35 @@ public class ProblemCatalogService {
         return problemRepository.recommendUnattempted(normalizedDifficulty, topic);
     }
 
+    /** Reads only what SQLite already holds, without touching the remote API. */
+    public Optional<Problem> findCached(String titleSlug) {
+        return problemRepository.findBySlug(normalizeSlug(titleSlug));
+    }
+
+    /**
+     * Records a problem that is known only by slug and title, so rows that reference it can be
+     * written now and the full detail filled in later. {@link #getProblem} treats a row without a
+     * statement as a cache miss, so the next lookup enriches it.
+     */
+    public void registerStub(String titleSlug, String title) {
+        problemRepository.upsert(new Problem(
+                null,
+                null,
+                title == null || title.isBlank() ? titleSlug : title,
+                normalizeSlug(titleSlug),
+                Difficulty.UNKNOWN,
+                false,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                "LEETCODE_SYNC_STUB",
+                Instant.now()));
+    }
+
     public long count() {
         return problemRepository.count();
     }
@@ -123,7 +152,7 @@ public class ProblemCatalogService {
     private Problem fromRemoteSummary(RemoteProblemSummary remote) {
         return new Problem(
                 null,
-                remote.frontendQuestionId(),
+                remote.questionFrontendId(),
                 remote.title(),
                 remote.titleSlug(),
                 Difficulty.from(remote.difficulty()),

@@ -9,3 +9,5 @@ target/
 *.db-wal
 data/*
 !data/.gitkeep
+.env.*
+!.env.example

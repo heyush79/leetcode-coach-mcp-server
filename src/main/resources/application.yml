@@ -25,9 +25,14 @@ spring:
         protocol: STREAMABLE
         type: SYNC
         instructions: >-
-          Use the tools to search problems, start a persisted practice session,
-          give progressive hints, record attempts, and review progress. Avoid
-          revealing a full solution before the user has attempted the problem.
+          This server remembers how the user's LeetCode practice actually went and
+          schedules reviews with spaced repetition. Submissions made on leetcode.com
+          are synced in automatically when credentials are configured; use
+          sync_leetcode_submissions to catch up on demand and get_sync_status to
+          explain why history may be empty. For "what should I practise", call
+          recommend_next_problem and relay its reason. Use start_practice, get_hint,
+          record_attempt and complete_practice for a coached sitting. Avoid revealing
+          a full solution before the user has attempted the problem.
         capabilities:
           tool: true
           resource: true
@@ -53,6 +58,25 @@ leetcode:
   user-agent: ${LEETCODE_USER_AGENT:LeetCodeCoachMCP/1.0}
   remote-enabled: ${LEETCODE_REMOTE_ENABLED:true}
   timeout-seconds: ${LEETCODE_TIMEOUT_SECONDS:8}
+  http-version: ${LEETCODE_HTTP_VERSION:HTTP_2}
+  # Circuit breaker around the unofficial GraphQL endpoint. Once open, tool calls fall back to
+  # SQLite immediately instead of waiting out the timeout on every request.
+  failure-rate-threshold: ${LEETCODE_FAILURE_RATE_THRESHOLD:50}
+  minimum-calls: ${LEETCODE_MINIMUM_CALLS:5}
+  sliding-window-size: ${LEETCODE_SLIDING_WINDOW_SIZE:10}
+  open-state-seconds: ${LEETCODE_OPEN_STATE_SECONDS:30}
+  # Pulls the user's own submissions from leetcode.com. Needs the session cookie above; does
+  # nothing without it. Sessions are inferred from submission timing.
+  sync:
+    enabled: ${LEETCODE_SYNC_ENABLED:true}
+    interval-seconds: ${LEETCODE_SYNC_INTERVAL_SECONDS:900}
+    initial-delay-seconds: ${LEETCODE_SYNC_INITIAL_DELAY_SECONDS:30}
+    session-gap-minutes: ${LEETCODE_SYNC_SESSION_GAP_MINUTES:120}
+    manual-session-slack-minutes: ${LEETCODE_SYNC_MANUAL_SLACK_MINUTES:30}
+    page-size: ${LEETCODE_SYNC_PAGE_SIZE:20}
+    max-pages: ${LEETCODE_SYNC_MAX_PAGES:25}
+    # LeetCode answers the submission list in about a second warm, but eight or more seconds cold.
+    timeout-seconds: ${LEETCODE_SYNC_TIMEOUT_SECONDS:30}
 
 app:
   mcp-access:

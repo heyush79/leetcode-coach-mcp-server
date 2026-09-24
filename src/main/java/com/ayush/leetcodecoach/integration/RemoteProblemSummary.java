@@ -5,7 +5,7 @@ import java.util.List;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record RemoteProblemSummary(
-        String frontendQuestionId,
+        String questionFrontendId,
         String title,
         String titleSlug,
         String difficulty,
