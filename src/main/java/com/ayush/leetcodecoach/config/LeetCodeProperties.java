@@ -1,9 +1,20 @@
 package com.ayush.leetcodecoach.config;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.regex.Pattern;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "leetcode")
 public class LeetCodeProperties {
+
+    /** LeetCode's session cookie is a JWT: three base64url segments, several hundred characters. */
+    private static final Pattern SESSION_SHAPE =
+            Pattern.compile("eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
+
+    /** Django's csrftoken cookie: 64 letters and digits (32 on older deployments). */
+    private static final Pattern CSRF_SHAPE = Pattern.compile("[A-Za-z0-9]{32,64}");
 
     private String endpoint = "https://leetcode.com/graphql";
     private String session = "";
@@ -112,6 +123,33 @@ public class LeetCodeProperties {
 
     public boolean credentialsConfigured() {
         return session != null && !session.isBlank() && csrfToken != null && !csrfToken.isBlank();
+    }
+
+    /**
+     * Why the configured credentials do not look like LeetCode's cookies, or empty when they do.
+     *
+     * <p>Advisory only: the values are still sent exactly as given, because LeetCode is the
+     * authority on whether they are valid. This exists because the commonest setup mistake is
+     * pasting the wrong cookie, and "LeetCode did not accept them" does not say which one. Only
+     * lengths are reported, never the values.
+     */
+    public Optional<String> credentialShapeProblem() {
+        if (!credentialsConfigured()) {
+            return Optional.empty();
+        }
+        List<String> problems = new ArrayList<>();
+        String trimmedSession = session.trim();
+        if (!SESSION_SHAPE.matcher(trimmedSession).matches() || trimmedSession.length() < 100) {
+            problems.add("LEETCODE_SESSION should be the value of the LEETCODE_SESSION cookie, a token of "
+                    + "several hundred characters starting with 'eyJ' (the configured value has "
+                    + trimmedSession.length() + " characters)");
+        }
+        String trimmedCsrf = csrfToken.trim();
+        if (!CSRF_SHAPE.matcher(trimmedCsrf).matches()) {
+            problems.add("LEETCODE_CSRF_TOKEN should be the value of the csrftoken cookie, 64 letters and "
+                    + "digits (the configured value has " + trimmedCsrf.length() + " characters)");
+        }
+        return problems.isEmpty() ? Optional.empty() : Optional.of(String.join("; ", problems));
     }
 
     /** Settings for pulling the user's own submissions from leetcode.com. */

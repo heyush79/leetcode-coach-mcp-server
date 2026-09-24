@@ -150,6 +150,10 @@ public class SubmissionSyncService {
         else if (!credentials) {
             explanation = "Set LEETCODE_SESSION and LEETCODE_CSRF_TOKEN to sync your submissions from leetcode.com.";
         }
+        else if (properties.credentialShapeProblem().isPresent()) {
+            explanation = "Credentials are configured but do not look like LeetCode cookies: "
+                    + properties.credentialShapeProblem().get() + ".";
+        }
         else if (lastRun.isEmpty()) {
             explanation = sync.isEnabled()
                     ? "Credentials are configured; the first background sync has not run yet."

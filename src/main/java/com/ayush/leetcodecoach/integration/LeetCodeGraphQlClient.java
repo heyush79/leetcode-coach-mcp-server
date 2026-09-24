@@ -110,9 +110,18 @@ public class LeetCodeGraphQlClient {
         if (page == null || page.submissions() == null) {
             // The shape LeetCode returns for a caller it does not recognise.
             throw new LeetCodeIntegrationException(
-                    "LeetCode returned no submission list; the session cookie is probably expired");
+                    "LeetCode returned no submission list; the session cookie is expired or not a real cookie"
+                            + properties.credentialShapeProblem().map(hint -> ". " + hint).orElse(""));
         }
         return page;
+    }
+
+    /** Names the likely mistake when LeetCode rejects the configured cookies. */
+    private String rejectedMessage() {
+        return "Credentials were supplied but LeetCode did not accept them"
+                + properties.credentialShapeProblem()
+                        .map(hint -> ". " + hint)
+                        .orElse(". The session may have expired; copy fresh cookie values from the browser");
     }
 
     public LeetCodeAuthStatus verifyAuthentication() {
@@ -147,7 +156,7 @@ public class LeetCodeGraphQlClient {
                     status == null ? null : status.username(),
                     status == null ? null : status.realName(),
                     status == null ? null : status.avatar(),
-                    authenticated ? "Authenticated LeetCode session" : "Credentials were supplied but LeetCode did not accept them");
+                    authenticated ? "Authenticated LeetCode session" : rejectedMessage());
         }
         catch (RuntimeException ex) {
             return new LeetCodeAuthStatus(
