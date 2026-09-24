@@ -13,7 +13,7 @@ public class LeetCodeProperties {
     private static final Pattern SESSION_SHAPE =
             Pattern.compile("eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+");
 
-    /** Django's csrftoken cookie: 64 letters and digits (32 on older deployments). */
+    /** Django's csrftoken cookie: 32 letters and digits when unmasked (Django 4.1+), 64 when masked. */
     private static final Pattern CSRF_SHAPE = Pattern.compile("[A-Za-z0-9]{32,64}");
 
     private String endpoint = "https://leetcode.com/graphql";
@@ -22,6 +22,9 @@ public class LeetCodeProperties {
     private String userAgent = "LeetCodeCoachMCP/1.0";
     private boolean remoteEnabled = true;
     private int timeoutSeconds = 8;
+
+    /** HTTP_2 or HTTP_1_1 for the GraphQL client. Diagnostic knob for client/server interactions. */
+    private String httpVersion = "HTTP_2";
 
     /** Percentage of failed calls in the sliding window that trips the breaker. */
     private float failureRateThreshold = 50;
@@ -85,6 +88,14 @@ public class LeetCodeProperties {
         this.timeoutSeconds = timeoutSeconds;
     }
 
+    public String getHttpVersion() {
+        return httpVersion;
+    }
+
+    public void setHttpVersion(String httpVersion) {
+        this.httpVersion = httpVersion;
+    }
+
     public float getFailureRateThreshold() {
         return failureRateThreshold;
     }
@@ -146,8 +157,8 @@ public class LeetCodeProperties {
         }
         String trimmedCsrf = csrfToken.trim();
         if (!CSRF_SHAPE.matcher(trimmedCsrf).matches()) {
-            problems.add("LEETCODE_CSRF_TOKEN should be the value of the csrftoken cookie, 64 letters and "
-                    + "digits (the configured value has " + trimmedCsrf.length() + " characters)");
+            problems.add("LEETCODE_CSRF_TOKEN should be the value of the csrftoken cookie, 32 or 64 letters "
+                    + "and digits (the configured value has " + trimmedCsrf.length() + " characters)");
         }
         return problems.isEmpty() ? Optional.empty() : Optional.of(String.join("; ", problems));
     }
@@ -181,6 +192,13 @@ public class LeetCodeProperties {
 
         /** Upper bound on pages per run, so a first sync over a long history stays bounded. */
         private int maxPages = 25;
+
+        /**
+         * Read timeout for the submission list, separate from the interactive one. LeetCode
+         * answers this query in about a second once its cache is warm but can take eight or more
+         * seconds cold, which is longer than a tool call should wait for a problem lookup.
+         */
+        private int timeoutSeconds = 30;
 
         public boolean isEnabled() {
             return enabled;
@@ -236,6 +254,14 @@ public class LeetCodeProperties {
 
         public void setMaxPages(int maxPages) {
             this.maxPages = maxPages;
+        }
+
+        public int getTimeoutSeconds() {
+            return timeoutSeconds;
+        }
+
+        public void setTimeoutSeconds(int timeoutSeconds) {
+            this.timeoutSeconds = timeoutSeconds;
         }
     }
 }

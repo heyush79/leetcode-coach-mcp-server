@@ -174,10 +174,22 @@ scheduling bug is fixed by replaying, not by patching rows.
 ### Idempotency and failure
 
 LeetCode's submission id is unique in `attempts`, so syncing twice cannot double-count. Runs are
-incremental: paging stops at the first page containing a known submission. A `full` run pages to a
-cap regardless, skipping known ids, to backfill. Each submission imports in its own transaction, so
+incremental: paging stops at the first page containing a known submission, within a page cap. A
+`full` run reads to the end of the listing regardless, skipping known ids, to backfill. (The first
+version capped full runs too, so once the cap was full a backfill re-read the same pages and found
+nothing; running against a real account is what showed it.) Each submission imports in its own transaction, so
 an outage part-way leaves the earlier ones stored and the next run resumes. A problem whose detail
 cannot be fetched is kept as a stub so the submission is never lost. One sync runs at a time.
+
+### A measured surprise
+
+Against a real account the first manual sync timed out at eight seconds, while `curl` got the same
+response in 1.5. LeetCode answers `submissionList` in about a second once its cache is warm, but
+cold it takes eight seconds or more; the background run thirteen seconds later, served from the
+cache the failed request had warmed, imported 500 submissions. The sync now has its own client with
+a thirty-second read timeout; tool calls keep the short one so a slow LeetCode never makes a problem
+search hang. Worth telling because the first hypotheses (HTTP/2, the User-Agent, a Cloudflare rule)
+were all wrong, and only isolating experiments settled it.
 
 ### What LeetCode does not expose
 

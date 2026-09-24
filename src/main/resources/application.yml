@@ -58,6 +58,7 @@ leetcode:
   user-agent: ${LEETCODE_USER_AGENT:LeetCodeCoachMCP/1.0}
   remote-enabled: ${LEETCODE_REMOTE_ENABLED:true}
   timeout-seconds: ${LEETCODE_TIMEOUT_SECONDS:8}
+  http-version: ${LEETCODE_HTTP_VERSION:HTTP_2}
   # Circuit breaker around the unofficial GraphQL endpoint. Once open, tool calls fall back to
   # SQLite immediately instead of waiting out the timeout on every request.
   failure-rate-threshold: ${LEETCODE_FAILURE_RATE_THRESHOLD:50}
@@ -74,6 +75,8 @@ leetcode:
     manual-session-slack-minutes: ${LEETCODE_SYNC_MANUAL_SLACK_MINUTES:30}
     page-size: ${LEETCODE_SYNC_PAGE_SIZE:20}
     max-pages: ${LEETCODE_SYNC_MAX_PAGES:25}
+    # LeetCode answers the submission list in about a second warm, but eight or more seconds cold.
+    timeout-seconds: ${LEETCODE_SYNC_TIMEOUT_SECONDS:30}
 
 app:
   mcp-access:

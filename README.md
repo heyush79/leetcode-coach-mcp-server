@@ -85,10 +85,10 @@ its stored state. The first sync brings in months of history, much of it older t
 already recorded; stepping forward would apply old events after new ones. Replay makes the schedule
 a pure function of the history, so the order in which the server learned it cannot matter.
 
-Runs are incremental: paging stops at the first page holding a submission already stored.
-`sync_leetcode_submissions` with `full=true` pages to the configured cap regardless, skipping known
-submissions, to backfill history a first bounded run did not reach. LeetCode's own submission id is
-the idempotency key, so syncing twice cannot double-count.
+Runs are incremental: paging stops at the first page holding a submission already stored, and reads
+at most 25 pages (500 submissions). `sync_leetcode_submissions` with `full=true` reads to the end of
+the history regardless, skipping known submissions, to backfill everything older than that cap.
+LeetCode's own submission id is the idempotency key, so syncing twice cannot double-count.
 
 What the sync cannot see, and how that is handled:
 
@@ -104,6 +104,11 @@ What the sync cannot see, and how that is handled:
   filled in on the next lookup.
 
 LeetCode offers no webhooks, so this is polling: every fifteen minutes by default, configurable.
+
+One measured quirk: LeetCode answers `submissionList` in about a second once its cache is warm, but
+in eight seconds or more when cold, which is longer than the eight-second timeout a tool call gets.
+The sync therefore uses its own client with a thirty-second read timeout; interactive lookups keep
+the short one, so a slow LeetCode never makes a problem search hang.
 
 ## Built with
 
@@ -290,7 +295,7 @@ The filter also rejects browser requests with an Origin host outside `localhost`
 | `get_topic_mastery` | Report recall performance per topic, weakest first |
 | `recommend_next_problem` | Due review, then weakest topic, then any unattempted problem |
 | `verify_leetcode_auth` | Check the configured LeetCode session |
-| `sync_leetcode_submissions` | Pull recent submissions from leetcode.com now; `full=true` backfills older history |
+| `sync_leetcode_submissions` | Pull recent submissions from leetcode.com now; `full=true` reads the whole history |
 | `get_sync_status` | Whether sync is configured, when it last ran, and how many submissions are in |
 | `recent_practice_sessions` | List recent sessions |
 

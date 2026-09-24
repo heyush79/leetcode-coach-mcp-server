@@ -188,8 +188,9 @@ public class LeetCodeCoachTools {
                     + "when the user has just been solving on leetcode.com and wants the coach caught up now.",
             generateOutputSchema = true)
     public SyncReport syncLeetCodeSubmissions(
-            @McpToolParam(description = "Re-scan the full history instead of stopping at the first "
-                    + "already-known submission. Use once to backfill older history.", required = false) Boolean full) {
+            @McpToolParam(description = "Read to the end of the submission history instead of stopping at "
+                    + "the first already-known submission. Use once to backfill everything older than the "
+                    + "regular sync's page cap.", required = false) Boolean full) {
         return syncService.sync(Boolean.TRUE.equals(full));
     }
 

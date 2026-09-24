@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.graphql.client.HttpSyncGraphQlClient;
 import org.springframework.stereotype.Component;
 
@@ -17,14 +18,17 @@ import org.springframework.stereotype.Component;
 public class LeetCodeGraphQlClient {
 
     private final HttpSyncGraphQlClient graphQlClient;
+    private final HttpSyncGraphQlClient syncGraphQlClient;
     private final LeetCodeProperties properties;
     private final CircuitBreaker circuitBreaker;
 
     public LeetCodeGraphQlClient(
             HttpSyncGraphQlClient graphQlClient,
+            @Qualifier("submissionSyncGraphQlClient") HttpSyncGraphQlClient syncGraphQlClient,
             LeetCodeProperties properties,
             CircuitBreaker leetCodeCircuitBreaker) {
         this.graphQlClient = graphQlClient;
+        this.syncGraphQlClient = syncGraphQlClient;
         this.properties = properties;
         this.circuitBreaker = leetCodeCircuitBreaker;
     }
@@ -102,7 +106,7 @@ public class LeetCodeGraphQlClient {
 
         RemoteSubmissionPage page = call(
                 "Unable to read submissions from LeetCode",
-                () -> graphQlClient.documentName("submissionList")
+                () -> syncGraphQlClient.documentName("submissionList")
                         .variables(variables)
                         .retrieveSync("submissionList")
                         .toEntity(RemoteSubmissionPage.class));
@@ -185,8 +189,23 @@ public class LeetCodeGraphQlClient {
                     failureMessage + " (circuit breaker is open after repeated failures)", ex);
         }
         catch (RuntimeException ex) {
-            throw new LeetCodeIntegrationException(failureMessage, ex);
+            throw new LeetCodeIntegrationException(failureMessage + ": " + rootCause(ex), ex);
         }
+    }
+
+    /**
+     * The innermost failure, in one line, so a timeout, a 403, and a GraphQL schema error each read
+     * differently to whoever sees the message. Exceptions from the HTTP client never carry request
+     * headers, so nothing here can leak the session cookie.
+     */
+    static String rootCause(Throwable ex) {
+        Throwable cause = ex;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage() == null ? "" : cause.getMessage().replaceAll("\\s+", " ").trim();
+        String summary = cause.getClass().getSimpleName() + (message.isEmpty() ? "" : " - " + message);
+        return summary.length() > 200 ? summary.substring(0, 197) + "..." : summary;
     }
 
     private void ensureRemoteEnabled() {

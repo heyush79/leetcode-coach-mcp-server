@@ -1,5 +1,6 @@
 package com.ayush.leetcodecoach.domain;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.Instant;
 import org.jspecify.annotations.Nullable;
@@ -24,6 +25,7 @@ public record PracticeSession(
     public static final String SOURCE_MANUAL = "MANUAL";
     public static final String SOURCE_LEETCODE = "LEETCODE";
 
+    @JsonIgnore
     public boolean isManual() {
         return SOURCE_MANUAL.equals(source);
     }

@@ -35,8 +35,9 @@ import org.springframework.stereotype.Service;
  * same rules and rebuild the same review schedule.
  *
  * <p>Runs are incremental. LeetCode lists submissions newest first, so a run stops at the first
- * page containing a submission already stored. A {@code full} run keeps paging to the configured
- * cap, skipping known submissions, which backfills history the first bounded run did not reach.
+ * page containing a submission already stored, and reads at most a configured number of pages. A
+ * {@code full} run keeps paging to the end of the listing, skipping known submissions, which
+ * backfills history the bounded runs never reached.
  */
 @Service
 public class SubmissionSyncService {
@@ -50,6 +51,9 @@ public class SubmissionSyncService {
     private final PracticeRepository practiceRepository;
     private final LeetCodeProperties properties;
     private final Clock clock;
+
+    /** Pages a full run may read before giving up on ever seeing {@code hasNext = false}. */
+    private static final int FULL_RUN_PAGE_CEILING = 500;
 
     /** One sync at a time: the scheduler and the on-demand tool must not interleave page reads. */
     private final AtomicBoolean running = new AtomicBoolean();
@@ -75,7 +79,8 @@ public class SubmissionSyncService {
      * Fetches new submissions, stores them, and rebuilds the review schedule of every problem they
      * touched.
      *
-     * @param full keep paging past known submissions, to backfill older history
+     * @param full keep paging past known submissions to the end of the listing, to backfill
+     *     history an incremental run's page cap never reached
      */
     public SyncReport sync(boolean full) {
         if (!properties.isRemoteEnabled()) {
@@ -119,7 +124,7 @@ public class SubmissionSyncService {
         catch (LeetCodeIntegrationException ex) {
             status = SyncRun.STATUS_FAILED;
             message = ex.getMessage();
-            log.warn("LeetCode sync failed: {}", message);
+            log.warn("LeetCode sync failed: {}", message, ex);
         }
         catch (RuntimeException ex) {
             status = SyncRun.STATUS_FAILED;
@@ -184,7 +189,8 @@ public class SubmissionSyncService {
         String lastKey = null;
         int offset = 0;
 
-        for (int page = 0; page < sync.getMaxPages(); page++) {
+        int pageLimit = full ? FULL_RUN_PAGE_CEILING : sync.getMaxPages();
+        for (int page = 0; page < pageLimit; page++) {
             RemoteSubmissionPage result = client.fetchSubmissions(offset, sync.getPageSize(), lastKey);
             boolean sawKnown = false;
 
