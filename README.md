@@ -50,6 +50,36 @@ conversation you were going to have anyway.
 There is no user interface in this repository, and that is deliberate. The client is the AI assistant.
 The REST endpoints exist only for debugging.
 
+## Quick start
+
+No Java, no Maven, no clone. The published image carries everything:
+
+```bash
+docker run -d --name leetcode-coach \
+  -p 127.0.0.1:8080:8080 \
+  -v leetcode-coach:/app/data \
+  ghcr.io/heyush79/leetcode-coach-mcp-server:latest
+```
+
+Published for `linux/amd64` and `linux/arm64`, so it runs on Apple Silicon as well as an ordinary
+server. Bound to `127.0.0.1` deliberately: the container listens on every interface, and that
+binding is what keeps the server on your own machine.
+
+Then two things:
+
+1. **Install the browser extension** so your submissions flow in. Download
+   `leetcode-coach-extension.zip` from the [latest release][releases], unzip it, and load it at
+   `chrome://extensions` with **Developer mode** on and **Load unpacked**. No LeetCode cookie is
+   asked for anywhere — your browser already has one.
+2. **Point an MCP client at** `http://127.0.0.1:8080/mcp` — Claude Code, Cursor, VS Code, Zed,
+   Cline, or anything else that speaks MCP. `mcp-client.example.json` has the config shape.
+
+Then ask it *"what should I practise today?"*
+
+Prefer to build from source, or want to change the code? See [Run locally](#run-locally).
+
+[releases]: https://github.com/heyush79/leetcode-coach-mcp-server/releases/latest
+
 ## Using it day to day
 
 1. Practise on leetcode.com exactly as you do now.
@@ -66,7 +96,7 @@ The assistant calls the tools; the tools read what actually happened.
 **One-time setup for the sync — pick one:**
 
 - **Browser extension (recommended).** Load [`extension/`](extension/) unpacked at
-  `chrome://extensions`. Your browser is already signed in to leetcode.com, so it makes the request:
+  `chrome://extensions`, or the zip from the [latest release][releases]. Your browser is already signed in to leetcode.com, so it makes the request:
   the cookie never leaves it, and the traffic comes from your IP. The server needs no credentials at
   all.
 - **Server-side.** Copy `.env.example` to `.env` and fill in `LEETCODE_SESSION` and
@@ -258,12 +288,26 @@ Use an MCP client or the MCP Inspector to connect through Streamable HTTP. A gen
 
 ## Run with Docker
 
+The published image is the quickest route; see [Quick start](#quick-start). To build and run the
+image from your own checkout instead:
+
 ```bash
-cp .env.example .env
+cp .env.example .env      # only if you want the server-side sync; the extension needs no cookie
 docker compose up --build
 ```
 
-SQLite is stored in a named Docker volume.
+SQLite lives in a named Docker volume, so practice history survives `docker compose down` and image
+rebuilds. `docker compose down -v` deletes it.
+
+Two Dockerfiles, on purpose:
+
+| File | Used by | Why |
+|---|---|---|
+| `Dockerfile` | `docker compose`, `docker build .` | Builds from source, so a fresh clone needs no Java |
+| `Dockerfile.dist` | the release workflow | Copies a jar built once on the runner. The jar is architecture-independent, so rebuilding it per architecture under emulation would only be slower |
+
+Releases are cut by tagging: `git tag v1.0.0 && git push origin v1.0.0` builds both architectures,
+pushes to GHCR, and attaches the jar and the packaged extension to the GitHub release.
 
 ## LeetCode authentication
 

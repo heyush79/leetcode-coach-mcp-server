@@ -1,18 +1,34 @@
 services:
   leetcode-coach:
+    # Builds from source. To run the published image instead:
+    #   image: ghcr.io/heyush79/leetcode-coach-mcp-server:latest
     build: .
     ports:
-      - "8080:8080"
+      # Bound to the loopback address on purpose: the container listens on every interface, and
+      # this is what decides that only this machine can reach it. Change to "8080:8080" only if
+      # you mean to expose it to your network.
+      - "127.0.0.1:8080:8080"
     environment:
       SERVER_ADDRESS: 0.0.0.0
+      SQLITE_URL: jdbc:sqlite:/app/data/leetcode-coach.db
+
+      # Only needed when the server reads LeetCode itself. Leave blank and use the browser
+      # extension instead, which keeps the cookie on your machine.
       LEETCODE_SESSION: ${LEETCODE_SESSION:-}
       LEETCODE_CSRF_TOKEN: ${LEETCODE_CSRF_TOKEN:-}
       LEETCODE_REMOTE_ENABLED: ${LEETCODE_REMOTE_ENABLED:-true}
+      LEETCODE_TIMEOUT_SECONDS: ${LEETCODE_TIMEOUT_SECONDS:-8}
+
+      # Background submission sync. Does nothing without the credentials above; the extension
+      # pushes on its own schedule regardless.
+      LEETCODE_SYNC_ENABLED: ${LEETCODE_SYNC_ENABLED:-true}
+      LEETCODE_SYNC_INTERVAL_SECONDS: ${LEETCODE_SYNC_INTERVAL_SECONDS:-900}
+      LEETCODE_SYNC_TIMEOUT_SECONDS: ${LEETCODE_SYNC_TIMEOUT_SECONDS:-30}
+
       MCP_API_KEY: ${MCP_API_KEY:-}
-      SQLITE_URL: jdbc:sqlite:/app/data/leetcode-coach.db
     volumes:
       - leetcode_coach_data:/app/data
-
+    restart: unless-stopped
 
 volumes:
   leetcode_coach_data:

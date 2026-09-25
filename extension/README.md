@@ -22,9 +22,20 @@ MCP tools. Only the transport differs.
 The extension talks to a server on your own machine, so it is distributed here rather than through
 the Chrome Web Store.
 
-1. Start the coach server (see the [main README](../README.md)).
+1. Start the coach server. The quickest way, with no Java installed:
+
+   ```bash
+   docker run -d --name leetcode-coach \
+     -p 127.0.0.1:8080:8080 -v leetcode-coach:/app/data \
+     ghcr.io/heyush79/leetcode-coach-mcp-server:latest
+   ```
+
+   Other ways are in the [main README](../README.md).
 2. Open `chrome://extensions` and turn on **Developer mode** (top right).
-3. Click **Load unpacked** and choose this `extension/` folder.
+3. Click **Load unpacked** and choose this `extension/` folder. Not cloned the repo? Download
+   `leetcode-coach-extension.zip` from the
+   [latest release](https://github.com/heyush79/leetcode-coach-mcp-server/releases/latest) and
+   unzip it first.
 4. Sign in at [leetcode.com](https://leetcode.com) in the same browser.
 5. Click the extension icon, then **Sync now**.
 
