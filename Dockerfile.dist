@@ -1,18 +1,10 @@
-# Builds from source, so `docker build .` works on a fresh clone with no Java or Maven installed.
+# Packages an already-built jar, for the multi-architecture release image.
 #
-# The published release image is built from Dockerfile.dist instead, which copies a jar built once
-# on the runner: the jar is architecture-independent, so building it per architecture under
-# emulation would only be slower.
-FROM maven:3.9.16-eclipse-temurin-17 AS build
-WORKDIR /workspace
-
-# Dependencies resolve in their own layer, so editing source does not re-download them.
-COPY pom.xml .
-RUN mvn -q -DskipTests dependency:go-offline
-
-COPY src src
-RUN mvn -q -DskipTests clean package
-
+# The jar is pure Java and so identical on every architecture. Building it once on the runner and
+# copying it into each image is minutes faster than the source-building Dockerfile, which under
+# emulation would run a full Maven build for arm64 as well.
+#
+# Use the plain Dockerfile to build from source; this one expects `mvn package` to have run.
 FROM eclipse-temurin:17-jre
 
 # curl is only here so the health check can ask the app whether it is actually serving, rather
@@ -24,7 +16,8 @@ RUN apt-get update \
 WORKDIR /app
 RUN useradd --system --uid 10001 appuser && mkdir -p /app/data && chown -R appuser:appuser /app
 
-COPY --from=build --chown=appuser:appuser /workspace/target/leetcode-coach-mcp-server-*.jar app.jar
+ARG JAR_FILE=target/leetcode-coach-mcp-server-*.jar
+COPY --chown=appuser:appuser ${JAR_FILE} app.jar
 
 USER appuser
 EXPOSE 8080

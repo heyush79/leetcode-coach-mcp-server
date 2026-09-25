@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>LeetCode Coach Sync</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>LeetCode Coach</h1>
+      <span id="indicator" class="indicator" title="Server status"></span>
+    </header>
+
+    <p id="status" class="status">Checking…</p>
+
+    <div class="actions">
+      <button id="sync" type="button" class="primary">Sync now</button>
+      <button id="backfill" type="button">Backfill all</button>
+    </div>
+
+    <details id="settings-panel">
+      <summary>Settings</summary>
+
+      <label for="serverUrl">Coach server</label>
+      <input id="serverUrl" type="url" spellcheck="false" placeholder="http://127.0.0.1:8080" />
+
+      <label for="apiKey">API key <span class="hint">(only if MCP_API_KEY is set)</span></label>
+      <input id="apiKey" type="password" spellcheck="false" placeholder="leave blank" />
+
+      <div class="row">
+        <label class="inline" for="autoSync">
+          <input id="autoSync" type="checkbox" />
+          Sync automatically every
+        </label>
+        <input id="intervalMinutes" type="number" min="1" max="1440" class="minutes" />
+        <span class="hint">min</span>
+      </div>
+    </details>
+
+    <footer>
+      <span class="hint">Your LeetCode cookie never leaves this browser.</span>
+    </footer>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

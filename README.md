@@ -21,9 +21,9 @@ You get a conversation, not a coach.
 
 This server gives an AI assistant the memory and the judgement it is missing.
 
-1. **It watches leetcode.com.** With your session cookie configured, your submissions are pulled
-   in every fifteen minutes and grouped into sittings. Solve on the site as you do now; there is
-   nothing to report.
+1. **It watches leetcode.com.** Your submissions are read every fifteen minutes and grouped into
+   sittings — by a browser extension that keeps the credential on your machine, or by the server
+   itself if you prefer. Solve on the site as you do now; there is nothing to report.
 2. **It remembers.** Every sitting, attempt, hint, and verdict is persisted in SQLite and survives
    restarts, whether it came from the site or from a session coached by the assistant.
 3. **It grades recall from evidence.** Each sitting produces a 0-5 recall grade derived from what
@@ -50,6 +50,36 @@ conversation you were going to have anyway.
 There is no user interface in this repository, and that is deliberate. The client is the AI assistant.
 The REST endpoints exist only for debugging.
 
+## Quick start
+
+No Java, no Maven, no clone. The published image carries everything:
+
+```bash
+docker run -d --name leetcode-coach \
+  -p 127.0.0.1:8080:8080 \
+  -v leetcode-coach:/app/data \
+  ghcr.io/heyush79/leetcode-coach-mcp-server:latest
+```
+
+Published for `linux/amd64` and `linux/arm64`, so it runs on Apple Silicon as well as an ordinary
+server. Bound to `127.0.0.1` deliberately: the container listens on every interface, and that
+binding is what keeps the server on your own machine.
+
+Then two things:
+
+1. **Install the browser extension** so your submissions flow in. Download
+   `leetcode-coach-extension.zip` from the [latest release][releases], unzip it, and load it at
+   `chrome://extensions` with **Developer mode** on and **Load unpacked**. No LeetCode cookie is
+   asked for anywhere — your browser already has one.
+2. **Point an MCP client at** `http://127.0.0.1:8080/mcp` — Claude Code, Cursor, VS Code, Zed,
+   Cline, or anything else that speaks MCP. `mcp-client.example.json` has the config shape.
+
+Then ask it *"what should I practise today?"*
+
+Prefer to build from source, or want to change the code? See [Run locally](#run-locally).
+
+[releases]: https://github.com/heyush79/leetcode-coach-mcp-server/releases/latest
+
 ## Using it day to day
 
 1. Practise on leetcode.com exactly as you do now.
@@ -63,10 +93,19 @@ The REST endpoints exist only for debugging.
 
 The assistant calls the tools; the tools read what actually happened.
 
-**One-time setup for the sync:** copy `.env.example` to `.env` and fill in `LEETCODE_SESSION` and
-`LEETCODE_CSRF_TOKEN` from your browser (DevTools > Application > Cookies > leetcode.com). These are
-account credentials: `.env` is already git-ignored, and LeetCode will expire the session
-periodically, at which point `get_sync_status` reports the failure and you paste fresh values.
+**One-time setup for the sync — pick one:**
+
+- **Browser extension (recommended).** Load [`extension/`](extension/) unpacked at
+  `chrome://extensions`, or the zip from the [latest release][releases]. Your browser is already signed in to leetcode.com, so it makes the request:
+  the cookie never leaves it, and the traffic comes from your IP. The server needs no credentials at
+  all.
+- **Server-side.** Copy `.env.example` to `.env` and fill in `LEETCODE_SESSION` and
+  `LEETCODE_CSRF_TOKEN` from your browser (DevTools > Application > Cookies > leetcode.com). Simpler
+  to demo and works headless, but the server then holds a credential that can write to your account,
+  and LeetCode expires it periodically — `get_sync_status` reports the failure and you paste fresh
+  values.
+
+Both feed the same pipeline. You can run either, or both.
 
 ## How submissions become practice history
 
@@ -105,6 +144,24 @@ What the sync cannot see, and how that is handled:
 
 LeetCode offers no webhooks, so this is polling: every fifteen minutes by default, configurable.
 
+### Two ways in, one pipeline
+
+```text
+  browser extension  ──┐                    (cookie stays in the browser, user's IP)
+                       ├──►  SubmissionImporter ──► RecallGrader ──► SM-2 replay ──► SQLite
+  server-side sync   ──┘                    (cookie in .env, server's IP)
+```
+
+`POST /api/sync/submissions` takes LeetCode's own submission records, so the extension forwards what
+it received rather than inventing a second shape that could drift. Everything downstream — sitting
+inference, grading, schedule rebuild, deduplication by LeetCode's submission id — is shared, which
+is why running both transports at once is harmless.
+
+The endpoint is guarded like `/mcp`: bound to localhost, behind `MCP_API_KEY` when one is set, and
+restricted by Origin so a web page the user happens to have open cannot write into a server
+listening on their own machine. Extension origins (`chrome-extension://`) are allowed by scheme,
+because the id is only fixed once an extension is packed.
+
 One measured quirk: LeetCode answers `submissionList` in about a second once its cache is warm, but
 in eight seconds or more when cold, which is longer than the eight-second timeout a tool call gets.
 The sync therefore uses its own client with a thirty-second read timeout; interactive lookups keep
@@ -114,6 +171,7 @@ the short one, so a slow LeetCode never makes a problem search hang.
 
 Java 17, Spring Boot 4.1, Spring AI's Streamable HTTP MCP server, Spring for GraphQL against
 LeetCode's unofficial endpoint behind a Resilience4j circuit breaker, and SQLite for persistence.
+The browser extension is plain Manifest V3 JavaScript with no build step.
 
 This repository is intentionally interview-sized: substantial enough to demonstrate protocol
 integration, persistence, external API handling, and failure design, but not padded with seventeen
@@ -126,7 +184,8 @@ microservices whose main job is forwarding JSON to one another.
 - Exposes fifteen MCP tools for search, session management, hints, attempts, reviews, sync, and progress.
 - Exposes a `leetcode://problem/{titleSlug}` MCP resource.
 - Fetches live problem metadata through LeetCode's GraphQL endpoint, behind a Resilience4j circuit breaker.
-- Syncs your own submissions from leetcode.com when `LEETCODE_SESSION` and CSRF credentials are configured, and verifies the session on request.
+- Syncs your own submissions from leetcode.com, either through the browser extension in
+  [`extension/`](extension/) or server-side with `LEETCODE_SESSION` and CSRF credentials.
 - Caches remote data in SQLite and falls back to six seeded problems when LeetCode is unavailable.
 - Persists practice sessions, attempts, and review state across server restarts.
 - Supports optional API-key protection and Origin validation on `/mcp`.
@@ -229,12 +288,26 @@ Use an MCP client or the MCP Inspector to connect through Streamable HTTP. A gen
 
 ## Run with Docker
 
+The published image is the quickest route; see [Quick start](#quick-start). To build and run the
+image from your own checkout instead:
+
 ```bash
-cp .env.example .env
+cp .env.example .env      # only if you want the server-side sync; the extension needs no cookie
 docker compose up --build
 ```
 
-SQLite is stored in a named Docker volume.
+SQLite lives in a named Docker volume, so practice history survives `docker compose down` and image
+rebuilds. `docker compose down -v` deletes it.
+
+Two Dockerfiles, on purpose:
+
+| File | Used by | Why |
+|---|---|---|
+| `Dockerfile` | `docker compose`, `docker build .` | Builds from source, so a fresh clone needs no Java |
+| `Dockerfile.dist` | the release workflow | Copies a jar built once on the runner. The jar is architecture-independent, so rebuilding it per architecture under emulation would only be slower |
+
+Releases are cut by tagging: `git tag v1.0.0 && git push origin v1.0.0` builds both architectures,
+pushes to GHCR, and attaches the jar and the packaged extension to the GitHub release.
 
 ## LeetCode authentication
 
@@ -396,6 +469,7 @@ The suite has three layers:
 - `ApplicationIntegrationTest` runs an offline workflow through the service layer against in-memory SQLite.
 - `SpacedRepetitionSchedulerTest` and `RecallGraderTest` pin the algorithm: interval growth, easiness floor, lapse handling, the interval cap, and every grading rule.
 - `LeetCodeGraphQlClientContractTest` runs the real GraphQL client against WireMock, pinning the upstream response shape and asserting the circuit breaker opens and short-circuits.
+- `SubmissionIngestControllerTest` drives the endpoint the extension posts to over real HTTP, with no credentials configured, asserting import, idempotent re-post, and that an ordinary web page origin is refused.
 - `SubmissionSyncContractTest` runs the sync against a stubbed leetcode.com: paging, session inference, grading, schedule rebuild, idempotent re-sync, attaching a submission to a coached session, a stub for unreachable problem detail, and the expired-cookie failure.
 - `McpProtocolIntegrationTest` boots the server on a random port and drives the real `/mcp` endpoint over JSON-RPC, asserting that all fifteen tools return spec-compliant results, and advancing an injected clock to prove a review becomes due.
 
@@ -420,5 +494,7 @@ Time-dependent behaviour reads an injected `Clock`, so review scheduling is test
 | Schedule rebuilt by replay | Correct for out-of-order history; a scheduling fix applies by replaying | Recomputes a problem's history on every change |
 | Polling every 15 minutes | LeetCode has no webhooks | Up to 15 minutes stale unless synced on demand |
 | Session cookie as credential | The only way in; the site itself uses it | Expires and must be refreshed by hand |
+| Extension reads, server imports | Credential stays at the edge; traffic uses the user's IP, so a shared deployment could not be IP-blocked for it | A second component to install and keep working |
+| Single-user by design | No custody of anyone's account credentials, no shared egress IP | Each person runs their own copy |
 
 See `INTERVIEW_GUIDE.md` for the explanation you should give rather than improvising architecture mythology under fluorescent lighting. See `VALIDATION.md` for build and smoke-test commands.
