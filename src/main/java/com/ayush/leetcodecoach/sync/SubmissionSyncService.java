@@ -104,21 +104,9 @@ public class SubmissionSyncService {
         String status;
         String message;
         try {
-            List<RemoteSubmission> fresh = fetchNewSubmissions(full, totals);
-            for (RemoteSubmission submission : fresh) {
-                importer.importSubmission(submission).ifPresent(outcome -> {
-                    totals.imported++;
-                    totals.sessionsCreated += outcome.sessionCreated() ? 1 : 0;
-                    totals.sessionsUpdated += outcome.sessionUpdated() ? 1 : 0;
-                    totals.problemsAdded += outcome.problemAdded() ? 1 : 0;
-                    affected.add(outcome.titleSlug());
-                });
-            }
-            for (String titleSlug : affected) {
-                reviewService.rebuildSchedule(titleSlug);
-            }
+            importAll(fetchNewSubmissions(full, totals), totals, affected);
             status = SyncRun.STATUS_SUCCEEDED;
-            message = describe(totals, affected);
+            message = describe(totals, affected, "leetcode.com");
             log.info("LeetCode sync: {}", message);
         }
         catch (LeetCodeIntegrationException ex) {
@@ -142,6 +130,57 @@ public class SubmissionSyncService {
         return new SyncReport(status, message, finished, List.copyOf(affected));
     }
 
+    /**
+     * Imports submissions the browser extension read from leetcode.com on the user's own machine.
+     *
+     * <p>The same importer, grader and scheduler as {@link #sync}: only the transport differs. The
+     * extension needs no knowledge of what is already stored, because the importer deduplicates on
+     * LeetCode's submission id, so it can re-send a page harmlessly and this method reports how many
+     * were actually new.
+     *
+     * <p>Needs no credentials on the server at all. The cookie stays in the browser that already
+     * holds it, and the request comes from the user's own IP rather than the server's.
+     */
+    public SyncReport ingest(List<RemoteSubmission> submissions) {
+        if (submissions == null || submissions.isEmpty()) {
+            return SyncReport.skipped("No submissions were supplied.");
+        }
+        if (!running.compareAndSet(false, true)) {
+            return SyncReport.skipped("A sync is already running.");
+        }
+
+        Instant startedAt = Instant.now(clock);
+        SyncRun run = new SyncRun(UUID.randomUUID().toString(), startedAt, null,
+                SyncRun.STATUS_RUNNING, 0, 0, 0, 0, 0, null);
+        syncRepository.start(run);
+
+        Totals totals = new Totals();
+        Set<String> affected = new LinkedHashSet<>();
+        String status;
+        String message;
+        try {
+            totals.seen = submissions.size();
+            importAll(inTimeOrder(submissions), totals, affected);
+            status = SyncRun.STATUS_SUCCEEDED;
+            message = describe(totals, affected, "the browser extension");
+            log.info("Extension sync: {}", message);
+        }
+        catch (RuntimeException ex) {
+            status = SyncRun.STATUS_FAILED;
+            message = "Unexpected failure importing submissions: " + ex.getMessage();
+            log.error("Extension sync failed", ex);
+        }
+        finally {
+            running.set(false);
+        }
+
+        SyncRun finished = new SyncRun(run.id(), startedAt, Instant.now(clock), status,
+                totals.seen, totals.imported, totals.sessionsCreated, totals.sessionsUpdated,
+                totals.problemsAdded, message);
+        syncRepository.finish(finished);
+        return new SyncReport(status, message, finished, List.copyOf(affected));
+    }
+
     public SyncStatus status() {
         LeetCodeProperties.Sync sync = properties.getSync();
         boolean credentials = properties.credentialsConfigured();
@@ -153,7 +192,9 @@ public class SubmissionSyncService {
             explanation = "Remote integration is disabled, so submissions are not synced.";
         }
         else if (!credentials) {
-            explanation = "Set LEETCODE_SESSION and LEETCODE_CSRF_TOKEN to sync your submissions from leetcode.com.";
+            explanation = "No LeetCode credentials on the server. Either install the browser extension, "
+                    + "which reads your submissions in your own browser, or set LEETCODE_SESSION and "
+                    + "LEETCODE_CSRF_TOKEN to let the server read them directly.";
         }
         else if (properties.credentialShapeProblem().isPresent()) {
             explanation = "Credentials are configured but do not look like LeetCode cookies: "
@@ -177,6 +218,36 @@ public class SubmissionSyncService {
                 practiceRepository.countSyncedAttempts(),
                 lastRun.orElse(null),
                 explanation);
+    }
+
+    /**
+     * Stores each submission, then rebuilds the review schedule of every problem touched.
+     *
+     * <p>Schedules are rebuilt once per problem after all the importing, not once per submission,
+     * because a replay is over the problem's whole history and repeating it per submission would be
+     * the same answer computed many times.
+     */
+    private void importAll(List<RemoteSubmission> submissions, Totals totals, Set<String> affected) {
+        for (RemoteSubmission submission : submissions) {
+            importer.importSubmission(submission).ifPresent(outcome -> {
+                totals.imported++;
+                totals.sessionsCreated += outcome.sessionCreated() ? 1 : 0;
+                totals.sessionsUpdated += outcome.sessionUpdated() ? 1 : 0;
+                totals.problemsAdded += outcome.problemAdded() ? 1 : 0;
+                affected.add(outcome.titleSlug());
+            });
+        }
+        for (String titleSlug : affected) {
+            reviewService.rebuildSchedule(titleSlug);
+        }
+    }
+
+    /** Oldest first, so sittings are inferred in the order they actually happened. */
+    private List<RemoteSubmission> inTimeOrder(List<RemoteSubmission> submissions) {
+        List<RemoteSubmission> ordered = new ArrayList<>(submissions);
+        ordered.sort(Comparator.comparing(
+                submission -> Optional.ofNullable(SubmissionParser.submittedAt(submission)).orElse(Instant.MAX)));
+        return ordered;
     }
 
     /**
@@ -216,18 +287,15 @@ public class SubmissionSyncService {
             offset += result.submissions().size();
         }
 
-        List<RemoteSubmission> ordered = new ArrayList<>(fresh.values());
-        ordered.sort(Comparator.comparing(
-                submission -> Optional.ofNullable(SubmissionParser.submittedAt(submission)).orElse(Instant.MAX)));
-        return ordered;
+        return inTimeOrder(new ArrayList<>(fresh.values()));
     }
 
-    private String describe(Totals totals, Set<String> affected) {
+    private String describe(Totals totals, Set<String> affected, String source) {
         if (totals.imported == 0) {
-            return "No new submissions; " + totals.seen + " already known.";
+            return "No new submissions from " + source + "; " + totals.seen + " already known.";
         }
-        return "Imported " + totals.imported + " new submission(s) across " + affected.size()
-                + " problem(s): " + totals.sessionsCreated + " session(s) created, "
+        return "Imported " + totals.imported + " new submission(s) from " + source + " across "
+                + affected.size() + " problem(s): " + totals.sessionsCreated + " session(s) created, "
                 + totals.sessionsUpdated + " extended, " + totals.problemsAdded + " problem(s) added to the catalog.";
     }
 

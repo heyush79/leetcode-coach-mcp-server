@@ -29,7 +29,8 @@
 
 - Built a Spring AI MCP server exposing 15 coding-practice tools over Streamable HTTP, with an SM-2
   spaced-repetition engine fed by an idempotent sync of the user's own submissions from LeetCode's
-  authenticated GraphQL: sittings inferred from submission timing, recall graded from observed
+  authenticated GraphQL — via a Manifest V3 browser extension that keeps the session credential on
+  the user's machine: sittings inferred from submission timing, recall graded from observed
   signals (attempts, hints, elapsed time), and schedules rebuilt by replaying history so
   out-of-order imports stay correct; hardened the unofficial integration with a Resilience4j circuit
   breaker, cache-first SQLite fallback, and WireMock contract tests, plus protocol-level MCP
@@ -54,6 +55,8 @@ transport is deprecated.
 | `SubmissionImporter` | Infers the sitting a submission belongs to and stores it, one transaction each |
 | `SubmissionParser` | Interprets LeetCode's display strings: verdicts, timestamps, runtime, memory |
 | `SubmissionSyncScheduler` | Runs the sync in the background once credentials are configured |
+| `SubmissionIngestController` | Receives submissions the browser extension read on the user's machine |
+| `extension/` | Manifest V3 extension: reads LeetCode in the browser, posts to the local server |
 | `LeetCodeGraphQlClient` | Executes named GraphQL documents behind a circuit breaker |
 | `ProblemRepository` / `PracticeRepository` / `ReviewRepository` | SQLite persistence |
 | `McpAccessFilter` | Optional API key and Origin-host validation |
@@ -190,6 +193,27 @@ cache the failed request had warmed, imported 500 submissions. The sync now has 
 a thirty-second read timeout; tool calls keep the short one so a slow LeetCode never makes a problem
 search hang. Worth telling because the first hypotheses (HTTP/2, the User-Agent, a Cloudflare rule)
 were all wrong, and only isolating experiments settled it.
+
+### Moving the credential to the edge
+
+The first version had the server hold the session cookie. That is fine for one user on their own
+machine and wrong the moment you imagine hosting it, for two independent reasons: you would be
+custodian of credentials that can *write* to other people's LeetCode accounts, and every user's sync
+would egress from one IP, which looks like one machine operating fifty accounts and gets that IP
+blocked.
+
+So there is a second transport: a Manifest V3 browser extension that makes the request from the
+browser that is already signed in. `credentials: "include"` attaches the httpOnly session cookie
+without the extension ever reading it; only the CSRF token, which is not httpOnly, is read. It posts
+LeetCode's own records to `POST /api/sync/submissions`, and the server needs no credentials at all.
+
+The part worth pointing at is how little had to change. The importer, grader and scheduler were
+already pure functions of a list of submissions, so the push path is the same pipeline with the
+fetching removed — one extracted method, one controller. Deduplication is the server's job, keyed on
+LeetCode's submission id, so the extension carries no state and can re-send a page harmlessly.
+
+It is also the honest answer to "how would you scale this": the design that makes a hosted version
+possible is the one that stops the server holding credentials, not more infrastructure.
 
 ### What LeetCode does not expose
 
